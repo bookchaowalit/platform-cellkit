@@ -1,0 +1,72 @@
+# Finance accounts cell: one of the ten finance services split from the retired finance_* tables (2026-10-12).
+# Bank, cash, wallet, credit and investment accounts. Other finance cells point at an account by its id (account_id).
+# Amounts are exact (money = numeric(19,4), decimal = numeric(30,10); SPEC-003); cross-cell ids (account_id, ...) are plain bigints, not foreign keys.
+cell: finance-accounts
+title: Finance accounts
+resources:
+  account:
+    # SPEC-006: fields of other cells that point here (a referenced record cannot be deleted).
+    referenced_by:
+    - transactions.transaction.account_id
+    - investments.investment.account_id
+    - liabilities.liability.account_id
+    - reconciliations.reconciliation.account_id
+    - subscriptions.subscription.account_id
+    # SPEC-005: reference data only in events (no amounts, names or notes).
+    graph: [account_type, scope, currency, status, opened_on, closed_on]
+    legacy_columns:
+      scope: owner_scope
+    filters:
+    - account_type
+    - scope
+    - status
+    unique:
+    - - name
+      - scope
+    ranges:
+    - [opened_on, closed_on]
+    fields:
+      name:
+        type: text
+        required: true
+        max_length: 200
+      account_type:
+        type: enum
+        values:
+        - bank
+        - cash
+        - wallet
+        - payment
+        - credit
+        - investment
+        - receivable
+        - other
+        required: true
+      scope:
+        type: text
+        max_length: 64
+        default: ''
+      institution:
+        type: text
+      currency:
+        type: currency
+        default: THB
+      status:
+        type: enum
+        values:
+        - planned
+        - active
+        - paused
+        - closed
+        default: active
+      opening_balance:
+        type: money
+      opened_on:
+        type: date
+      closed_on:
+        type: date
+      metadata:
+        type: json
+        json: object
+      notes:
+        type: text

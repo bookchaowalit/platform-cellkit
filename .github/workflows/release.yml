@@ -1,0 +1,39 @@
+# A tag vX.Y.Z builds the wheel and sdist and attaches them to a GitHub release.
+# Services pin the wheel URL; uv.lock records its sha256, so a release is never re-uploaded.
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - name: Version matches the tag
+        run: |
+          version=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)
+          init=$(grep -m1 '^__version__ = ' src/cellkit/__init__.py | cut -d'"' -f2)
+          [ "v$version" = "$GITHUB_REF_NAME" ] && [ "$version" = "$init" ] || {
+            echo "::error::tag $GITHUB_REF_NAME, pyproject $version, __version__ $init must agree"; exit 1; }
+      - name: Build
+        run: uv build
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum * > SHA256SUMS)
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "::error::release $GITHUB_REF_NAME exists; cut a new version instead of replacing assets"; exit 1
+          fi
+          gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file <(
+            echo "Pin in a service's pyproject.toml:"; echo; echo '```toml'
+            echo "\"platform-cellkit[mcp] @ https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/platform_cellkit-${GITHUB_REF_NAME#v}-py3-none-any.whl\""
+            echo '```'; echo; echo '```'; cat dist/SHA256SUMS; echo '```')

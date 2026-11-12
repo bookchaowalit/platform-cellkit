@@ -1,0 +1,62 @@
+# Transactions cell: one of the ten finance services split from the retired finance_* tables (2026-10-12).
+# Money in and out of an account (account_id from finance-accounts; subscription_id from subscriptions).
+# Amounts are exact (money = numeric(19,4), decimal = numeric(30,10); SPEC-003); cross-cell ids (account_id, ...) are plain bigints, not foreign keys.
+cell: transactions
+title: Transactions
+resources:
+  transaction:
+    # SPEC-005: reference data only in events (no amounts, names or notes).
+    graph: [transaction_date, transaction_type, currency, account_id, scope, subscription_id]
+    legacy_columns:
+      scope: owner_scope
+    filters:
+    - account_id
+    - category
+    - transaction_type
+    - scope
+    order: transaction_date
+    fields:
+      transaction_date:
+        type: date
+        required: true
+      transaction_type:
+        type: enum
+        values:
+        - income
+        - expense
+        - transfer
+        - refund
+        - fee
+        - adjustment
+        required: true
+      amount:
+        type: money
+        min: 0
+        required: true
+      currency:
+        type: currency
+        default: THB
+      account_id:
+        references: finance-accounts.account
+        refuse_status: [closed]
+        type: bigint
+      scope:
+        type: text
+        max_length: 64
+        default: ''
+      category:
+        type: text
+      merchant:
+        type: text
+      description:
+        type: text
+      source:
+        type: text
+        default: manual
+      subscription_id:
+        references: subscriptions.subscription
+        refuse_status: [cancelled, expired]
+        type: bigint
+      metadata:
+        type: json
+        json: object
