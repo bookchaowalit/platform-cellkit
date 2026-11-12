@@ -1,6 +1,6 @@
 [project]
 name = "platform-cellkit"
-version = "1.0.5"
+version = "1.0.6"
 description = "Cell toolkit: one cell.yaml drives a microservice's API, migrations, roles, publisher and MCP server"
 readme = "README.md"
 license = "AGPL-3.0-only"

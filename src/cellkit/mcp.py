@@ -33,6 +33,7 @@ import importlib
 import inspect
 import os
 import re
+import sys
 import urllib.parse
 import uuid
 import warnings
@@ -512,10 +513,13 @@ def build_server(
 def find_cell() -> Cell:
     from cellkit.spec import load
 
+    # The kit is an installed wheel, so its own location says nothing about the cell. The
+    # repository is found from the variable, the working directory, or the virtualenv the
+    # `<cell>-mcp` script runs in (<repo>/.venv), which works when it is started by absolute path.
     for root in (
         os.environ.get("CELL_APP_ROOT"),
         Path.cwd(),
-        Path(__file__).resolve().parents[2],
+        Path(sys.prefix).resolve().parent,
     ):
         if root and (Path(root) / "cell.yaml").is_file():
             return load(Path(root) / "cell.yaml")

@@ -515,3 +515,31 @@ def test_main_builds_all_tools_when_not_read_only(monkeypatch):
 
 mini_root = support.mini_root
 mini_cell = support.mini_cell
+
+
+def test_find_cell_uses_the_repository_that_owns_the_virtualenv(tmp_path, monkeypatch):
+    """Codex P2 (2026-11-12): with the kit installed as a wheel, a `<cell>-mcp` started by absolute
+    path from another directory (no CELL_APP_ROOT) still finds the repository's cell.yaml via the
+    virtualenv it runs in (<repo>/.venv)."""
+    import shutil
+    import sys
+
+    repo = tmp_path / "some-cell-api"
+    (repo / ".venv").mkdir(parents=True)
+    shutil.copy(FIXTURE_SPEC, repo / "cell.yaml")
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    monkeypatch.delenv("CELL_APP_ROOT", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(repo / ".venv"))
+    assert kit_mcp.find_cell().name == "kit-sample"
+
+
+def test_find_cell_reports_the_setting_when_nothing_is_found(tmp_path, monkeypatch):
+    import sys
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CELL_APP_ROOT", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "venv"))
+    with pytest.raises(SystemExit, match="CELL_APP_ROOT"):
+        kit_mcp.find_cell()
