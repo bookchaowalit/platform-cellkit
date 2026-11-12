@@ -608,14 +608,26 @@ def test_a_reader_is_built_from_complete_kafka_settings(harness, monkeypatch):
     assert built[0]["group.id"] == f"{harness.cell.name}-refs"
 
 
-def test_a_fresh_reader_starts_at_the_oldest_message_left():
+def test_a_fresh_reader_refuses_history_that_expired_before_its_first_read():
+    """SPEC-006 1.11 (owner 2026-11-12): with no stored position and a low watermark above 0, the
+    events before it (creates, snapshots) are gone, so the reference state would miss dependents.
+    Fail closed; the operator seeds ref_offsets once the state is rebuilt."""
     import time as _time
+
+    from cellkit import refs
 
     class _Expired(_Consumer):
         def get_watermark_offsets(self, tp, timeout):
             return (5, 5)  # everything before offset 5 is gone, nothing new
 
-    assert _reader(_Expired([])).read({}, _time.monotonic() + 1) == []
+    with pytest.raises(refs.Unavailable, match="before the first read"):
+        _reader(_Expired([])).read({}, _time.monotonic() + 1)
+
+
+def test_a_fresh_reader_with_its_whole_history_reads_from_zero():
+    import time as _time
+
+    assert _reader(_Consumer([], end=0)).read({}, _time.monotonic() + 1) == []
 
 
 def test_unread_history_that_expired_is_not_reported_as_read():
@@ -839,13 +851,20 @@ def test_a_catch_up_that_runs_out_of_time_keeps_what_it_read(harness, monkeypatc
 
 
 def test_a_quiet_partition_gets_a_position_so_the_next_read_is_not_stuck(harness):
-    """A fresh reader starts a partition with expired messages at its low watermark and saves that."""
+    """A partition seeded at its low watermark keeps a position, so the next read is not stuck."""
     import time as _time
     from types import SimpleNamespace
 
     from cellkit import refs
 
-    harness.superuser(f"DELETE FROM {harness.cell.schema}.ref_offsets RETURNING 1")
+    s = harness.cell.schema
+    harness.superuser(f"DELETE FROM {s}.ref_offsets RETURNING 1")
+    # Bootstrap (SPEC-006 1.11): partition 1 lost offsets 0-3 to retention; after rebuilding the
+    # reference state the operator seeds its position at the low watermark.
+    harness.superuser(
+        f"INSERT INTO {s}.ref_offsets (topic, partition, next_offset)"
+        f" VALUES ('{refs.TOPIC}', 1, 4) RETURNING 1"
+    )
 
     class _Two(_Consumer):
         def list_topics(self, topic, timeout):
@@ -856,7 +875,7 @@ def test_a_quiet_partition_gets_a_position_so_the_next_read_is_not_stuck(harness
         def get_watermark_offsets(self, tp, timeout):
             return (
                 (0, 1) if tp.partition == 0 else (4, 4)
-            )  # partition 1: expired, nothing new
+            )  # partition 1: expired (seeded at 4), nothing new
 
     with harness.cluster.connect(harness.cell.role("publisher")) as conn:
         assert (

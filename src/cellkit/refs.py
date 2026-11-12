@@ -349,12 +349,17 @@ class KafkaReader:
             )
         # A stored position below the low watermark means events expired unread (retention):
         # the reference state may be missing deletes, so refuse rather than call it complete.
-        # Only partitions that delivered something store a position, so once the reader has any
-        # position, a partition without one started at offset 0.
-        if start and any(start.get(p, 0) < low for p, (low, _high) in marks.items()):
-            raise Unavailable("unread history expired")
+        # A partition without a stored position counts from offset 0.
+        # A fresh reader (no positions at all) whose low watermark is above 0 lost the creates and
+        # snapshots before it, so it would miss dependents: fail closed too (SPEC-006 1.11). The
+        # bootstrap is an operator step: rebuild the reference state, then seed ref_offsets.
+        if any(start.get(p, 0) < low for p, (low, _high) in marks.items()):
+            raise Unavailable(
+                "unread history expired"
+                if start
+                else "history expired before the first read; rebuild and seed ref_offsets"
+            )
         ends = {p: high for p, (_low, high) in marks.items()}
-        # A reader with no stored position starts at the oldest message left.
         first = {p: max(start.get(p, 0), low) for p, (low, _high) in marks.items()}
         todo = {p for p in partitions if first[p] < ends[p]}
         # Every partition looked at gets a position (read to its end, or where it starts), so a

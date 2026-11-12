@@ -6,6 +6,6 @@ pins one release of this package. Nothing here is a running service.
 
 from ._sentry import init_sentry as _init_sentry
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 _init_sentry()
