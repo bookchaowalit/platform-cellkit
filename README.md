@@ -30,6 +30,7 @@ tests keep using the kit's fixtures and contract suite:
 ```python
 # tests/conftest.py
 from cellkit.testing import client, harness, owner, platform  # noqa: F401
+
 # tests/test_contract.py
 from cellkit.contract import *
 ```
