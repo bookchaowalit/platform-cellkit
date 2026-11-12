@@ -104,3 +104,18 @@ def test_cells_without_mcp_extend_get_only_the_generated_tools():
         t.name.startswith("kit-sample.") for t in asyncio.run(server.list_tools())
     )
     assert "kit-sample.echo" not in {t.name for t in asyncio.run(server.list_tools())}
+
+
+def test_roles_sql_creates_the_extra_roles_like_the_runtime_roles():
+    """Codex P2 (2026-11-12): LocalCluster grants CONNECT to every runtime role, so roles.sql must create them."""
+    from cellkit.sqlgen import roles
+
+    cell = parse(minimal(extra_roles=["relay"]))
+    sql = roles(cell)
+    relay = cell.role("relay")
+    assert (
+        f"CREATE ROLE {relay} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;"
+        in sql
+    )
+    assert f"rolname = '{relay}'" in sql
+    assert relay not in roles(parse(minimal()))

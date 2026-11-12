@@ -1,6 +1,6 @@
 [project]
 name = "platform-cellkit"
-version = "1.0.2"
+version = "1.0.3"
 description = "Cell toolkit: one cell.yaml drives a microservice's API, migrations, roles, publisher and MCP server"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -41,7 +41,8 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Plain `pytest` runs the kit suite; ./run-tests.sh also runs tests/finance once per finance fixture.
+testpaths = ["tests/kit"]
 addopts = "-ra"
 
 [tool.coverage.run]

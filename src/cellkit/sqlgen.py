@@ -280,12 +280,25 @@ def roles(cell: Cell) -> str:
         cell.role("api"),
         cell.role("publisher"),
     )
+    # extra_roles (e.g. relay) are created like the runtime roles; the cell's migrations grant
+    # them what they need. Cells without extra_roles get exactly the same SQL as before.
+    extras = [cell.role(kind) for kind in cell.extra_roles]
+    extra_notes = "".join(
+        f"\n-- {role} an extra runtime role (extra_roles); its grants are in the migrations."
+        for role in extras
+    )
+    extra_creates = "".join(
+        f"\n    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{role}') THEN"
+        f"\n        CREATE ROLE {role} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;"
+        "\n    END IF;"
+        for role in extras
+    )
     return f"""-- Roles for the {cell.name} database. Locally a superuser runs this; on Neon
 -- `{cell.name}-db provision` creates the same roles through the migrator.
 --
 -- {migrator}  owns the schema and runs migrations only.
 -- {api}       the API at runtime: no superuser, no BYPASSRLS, owns nothing.
--- {publisher} sweeps and marks the outbox across workspaces; nothing else.
+-- {publisher} sweeps and marks the outbox across workspaces; nothing else.{extra_notes}
 
 DO $$
 BEGIN
@@ -297,7 +310,7 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{publisher}') THEN
         CREATE ROLE {publisher} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS NOINHERIT;
-    END IF;
+    END IF;{extra_creates}
 END
 $$;
 """
