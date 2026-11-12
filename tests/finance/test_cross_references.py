@@ -913,6 +913,55 @@ def test_a_catch_up_stops_applying_at_its_deadline_and_resumes_there(
     assert 1 <= saved < 3  # some progress, never past what was applied
 
 
+def test_a_partition_left_unapplied_at_the_deadline_still_gets_a_position(
+    harness, monkeypatch
+):
+    """SPEC-006 1.10: a partition with nothing applied before the deadline stores its first unapplied
+    offset, so the next read starts there and never reports "unread history expired"."""
+    import time as _time
+    from types import SimpleNamespace
+
+    from cellkit import refs
+
+    s = harness.cell.schema
+    harness.superuser(f"DELETE FROM {s}.ref_offsets RETURNING 1")
+    real_clock = _time.monotonic  # refs.time is this same module
+    clock = iter(range(0, 10_000, 4))  # each call to the clock moves 4 s on
+    monkeypatch.setattr(refs.time, "monotonic", lambda: float(next(clock)))
+
+    class _Batch:
+        def __init__(self) -> None:
+            self.positions = {0: 2, 1: 8}
+
+        def read(self, start, deadline):
+            return [(0, 0, {"probe": 0}), (0, 1, {"probe": 1}), (1, 7, {"probe": 7})]
+
+    with harness.cluster.connect(harness.cell.role("publisher")) as conn:
+        with pytest.raises(refs.Unavailable):
+            refs.catch_up(conn, harness.cell, _Batch(), seconds=5.0)
+        saved = dict(
+            conn.execute(
+                f"SELECT partition, next_offset FROM {s}.ref_offsets ORDER BY partition"
+            ).fetchall()
+        )
+    # Partition 0 applied both of its messages; partition 1 applied none (the deadline came first).
+    assert saved == {0: 2, 1: 7}
+
+    monkeypatch.setattr(refs.time, "monotonic", real_clock)
+
+    class _Marks(_Consumer):
+        def list_topics(self, topic, timeout):
+            return SimpleNamespace(
+                topics={topic: SimpleNamespace(partitions={0: None, 1: None})}
+            )
+
+        def get_watermark_offsets(self, tp, timeout):
+            return (0, 1) if tp.partition == 0 else (7, 7)
+
+    # Partition 1 starts at its stored 7 (= low watermark): not "history expired".
+    assert _reader(_Marks([])).read(saved, real_clock() + 1) == []
+
+
 def test_watermark_reads_share_the_catch_up_deadline():
     """Each watermark call gets only the time left; past the deadline the read stops (503)."""
     import time as _time

@@ -263,7 +263,15 @@ def catch_up(
         applied = 0
         for index, (partition, offset, envelope) in enumerate(messages):
             if index and time.monotonic() > began + seconds:
-                left = {p for p, _, _ in messages[index:]}
+                rest = messages[index:]
+                left = {p for p, _, _ in rest}
+                # A partition with nothing applied yet still stores its first unapplied offset
+                # (it moves past nothing); without a row the next read counts it from 0 and
+                # reports "unread history expired" once the low watermark is above 0 (SPEC-006 1.10).
+                # rest is in offset order per partition and an applied offset + 1 is never above
+                # the first unapplied one, so setdefault never lowers or skips anything.
+                for p, o, _ in rest:
+                    ends.setdefault(p, o)
                 incomplete = incomplete or Incomplete(messages[:index])
                 break
             applied += 1
