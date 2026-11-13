@@ -47,3 +47,32 @@ def test_defaults_are_only_filled_in_for_range_fields_and_never_crash_a_create()
     )
     assert with_defaults(cell.resource("slot"), {"end": 5}) == {"end": 5, "start": 10}
     assert with_defaults(cell.resource("plain"), {}) == {}
+
+
+def test_a_numeric_range_default_is_rounded_to_the_column_scale_like_postgresql():
+    from decimal import Decimal
+
+    from cellkit.app import range_errors, with_defaults
+    from cellkit.spec import parse
+
+    cell = parse(
+        {
+            "cell": "kit",
+            "resources": {
+                "band": {
+                    "fields": {
+                        "low": {
+                            "type": "money",
+                            "default": "10.00005",
+                        },  # numeric(19,4) stores 10.0001
+                        "high": {"type": "money"},
+                    },
+                    "ranges": [["low", "high"]],
+                }
+            },
+        }
+    )
+    r = cell.resource("band")
+    filled = with_defaults(r, {"high": Decimal("10.0000")})
+    assert filled["low"] == Decimal("10.0001")
+    assert range_errors(r, filled) == ["high", "low"]
