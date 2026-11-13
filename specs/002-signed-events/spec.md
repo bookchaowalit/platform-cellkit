@@ -29,7 +29,9 @@ against the public keys pinned for the cell named in the event's `type`.
     for example `{"finance-budgets": ["..."], ...}`. A list allows rotation: add the new key,
     switch the producer, then drop the old key.
   - `<CELL>_EVENT_SIGNATURES` is `off` (the default), `report` or `enforce`. Any other value
-    counts as `enforce` (fail closed).
+    counts as `enforce` (fail closed). An empty value counts as unset (`off`) on purpose: GitHub
+    Actions passes an unset repository variable (`${{ vars.X }}`) as `""`, and unset must keep
+    1.0.11 behaviour. A typo is caught; a blank is not a mode.
 - **Check:** each event a cell would apply gets a verdict: `valid`, `missing` (no signature),
   `invalid` (bad shape, unknown key id or bad signature) or `unknown_producer` (no keys pinned
   for that cell).

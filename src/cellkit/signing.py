@@ -143,6 +143,7 @@ def signer(
 def mode(cell: Cell, environ: Mapping[str, str] = os.environ) -> str:
     value = environ.get(f"{cell.env}_EVENT_SIGNATURES")
     if not value:
+        # Unset or blank: GitHub Actions passes an unset repository variable as "" (SPEC-002).
         return "off"
     return value if value in MODES else "enforce"  # fail closed on a typo
 
