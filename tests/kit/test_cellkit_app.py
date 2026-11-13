@@ -1,3 +1,10 @@
+"""cellkit.app helpers: range checks with the defaults the database fills in."""
+
+from __future__ import annotations
+
+import pytest
+
+
 def test_a_range_is_checked_with_the_field_defaults_filled_in():
     from cellkit.app import range_errors, with_defaults
     from cellkit.spec import parse
@@ -128,3 +135,57 @@ def test_a_non_finite_range_default_is_left_to_the_database():
         filled = with_defaults(r, {"high": Decimal(1)})
         assert "low" not in filled, bad
         assert range_errors(r, filled) == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "default", "expected"),
+    [
+        ("int", 10, 10),
+        ("int", "10", 10),
+        ("int", True, None),  # a boolean is not a number here
+        ("int", 1.5, None),
+        ("real", 2.5, 2.5),
+        ("real", "nan", None),
+        ("date", "2026-01-01", "date:2026-01-01"),
+        ("date", "20260101", None),  # PostgreSQL reads it, the API would not: leave it
+        ("timestamp", "2026-01-01T00:00:00+00:00", "ts:2026-01-01T00:00:00+00:00"),
+        (
+            "timestamp",
+            "2026-01-01T07:00:00",
+            "ts:2026-01-01T07:00:00+00:00",
+        ),  # naive = UTC
+        ("timestamp", "20260101", None),  # would be read as a Unix time by the API
+        ("timestamp", "now()", None),
+    ],
+)
+def test_range_defaults_are_read_only_where_postgresql_reads_them_the_same(
+    kind, default, expected
+):
+    from datetime import date, datetime
+
+    from cellkit.app import with_defaults
+    from cellkit.spec import parse
+
+    cell = parse(
+        {
+            "cell": "kit",
+            "resources": {
+                "band": {
+                    "fields": {
+                        "low": {"type": kind, "default": default},
+                        "high": {"type": kind},
+                    },
+                    "ranges": [["low", "high"]],
+                }
+            },
+        }
+    )
+    got = with_defaults(cell.resource("band"), {}).get("low")
+    if expected is None:
+        assert got is None
+    elif str(expected).startswith("date:"):
+        assert got == date.fromisoformat(expected[5:])
+    elif str(expected).startswith("ts:"):
+        assert got == datetime.fromisoformat(expected[3:])
+    else:
+        assert got == expected
