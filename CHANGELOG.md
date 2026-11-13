@@ -2,6 +2,9 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.2 (2026-11-13)
+- app: a `money` or `decimal` default in a range is rounded the way PostgreSQL stores it (half away from zero, at the column scale) before the range check. Before, a default with more decimals was skipped, so the check never saw it. No service sets such a default, so services pick this up on their next bump. Codex review. Red: 48ddf88.
+
 ## 1.1.1 (2026-11-13)
 - relay: when a cell is in `enforce` and has no signing key (a lost secret reaches GitHub Actions as `""`), it sends nothing and fails with `missing signing key`. Before, it sent unsigned events, and every enforcing consumer would have dropped them.
 - relay job: a reference-read failure (`refs.Unavailable`, which includes `bad event keys` under enforce) is a JSON error with exit 2, not a traceback.

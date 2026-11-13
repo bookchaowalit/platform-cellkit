@@ -37,7 +37,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Annotated, Any, Literal
 
 import psycopg
@@ -318,6 +318,16 @@ def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
     in_ranges = {name for pair in r.ranges for name in pair}
     for f in r.fields:
         if f.name in in_ranges and f.default is not None and f.name not in out:
+            if f.type in NUMERIC:
+                # As PostgreSQL stores it: numeric(p, s) rounds half away from zero to s places.
+                try:
+                    exact = Decimal(str(f.default))
+                except ArithmeticError:
+                    continue
+                out[f.name] = exact.quantize(
+                    Decimal(1).scaleb(-NUMERIC[f.type][1]), rounding=ROUND_HALF_UP
+                )
+                continue
             try:
                 out[f.name] = TypeAdapter(_python_type(f)).validate_python(f.default)
             except ValidationError:
