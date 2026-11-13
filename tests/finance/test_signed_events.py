@@ -294,3 +294,42 @@ def test_bad_event_keys_under_enforce_are_a_json_error_from_the_job(
     _job_env(harness, monkeypatch)
     assert relay.main([]) == 2
     assert json.loads(capsys.readouterr().out) == {"error": "bad event keys"}
+
+
+def test_enforce_guards_dependents_of_a_referenced_cell(
+    client, harness, reader, platform, monkeypatch
+):
+    """A cell others point at (referenced_by): a forged "dependent" never blocks a delete."""
+    from cellkit.contract import make
+
+    if not xr._referenced():
+        pytest.skip("nothing points at this cell")
+    actor, ws = uuid.uuid4(), uuid.uuid4()
+    platform.grants[actor] = set(harness.cell.permissions())
+    headers = harness.token(actor, ws)
+    r = xr._referenced()[0]
+    source = r.referenced_by[0]
+    seed, public = _seed_and_public()
+    other_seed, _ = _seed_and_public()
+    env = harness.cell.env
+    monkeypatch.setenv(f"{env}_EVENT_KEYS", json.dumps({source.cell: [public]}))
+    monkeypatch.setenv(f"{env}_EVENT_SIGNATURES", "enforce")
+    record = make(client, headers, harness.cell, r)
+
+    def dependent(signed_with):
+        e = event(
+            f"{source.cell}.{source.resource}",
+            "created",
+            ws,
+            next(_ids),
+            **{source.field: record["id"]},
+        )
+        return _wire(signing.sign(e, signing.private_key(signed_with)))
+
+    reader.add(dependent(other_seed))  # forged: wrong key
+    path = f"/v1/{r.plural}/{record['id']}"
+    assert client.delete(path, headers=headers).status_code == 204
+    record = make(client, headers, harness.cell, r)
+    reader.add(dependent(seed))  # genuine
+    path = f"/v1/{r.plural}/{record['id']}"
+    assert client.delete(path, headers=headers).status_code == 409
