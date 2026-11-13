@@ -101,3 +101,30 @@ def test_a_wide_decimal_range_default_never_breaks_a_create():
     )
     filled = with_defaults(cell.resource("band"), {"high": Decimal(1)})
     assert filled["low"] == Decimal(wide)
+
+
+def test_a_non_finite_range_default_is_left_to_the_database():
+    from decimal import Decimal
+
+    from cellkit.app import range_errors, with_defaults
+    from cellkit.spec import parse
+
+    for bad in ("NaN", "Infinity", "-Infinity", "sNaN"):
+        cell = parse(
+            {
+                "cell": "kit",
+                "resources": {
+                    "band": {
+                        "fields": {
+                            "low": {"type": "money", "default": bad},
+                            "high": {"type": "money"},
+                        },
+                        "ranges": [["low", "high"]],
+                    }
+                },
+            }
+        )
+        r = cell.resource("band")
+        filled = with_defaults(r, {"high": Decimal(1)})
+        assert "low" not in filled, bad
+        assert range_errors(r, filled) == []
