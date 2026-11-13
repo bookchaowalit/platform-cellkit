@@ -156,8 +156,16 @@ def test_a_non_finite_range_default_is_left_to_the_database():
         ),  # naive = UTC
         ("timestamp", "20260101", None),  # would be read as a Unix time by the API
         ("timestamp", "now()", None),
-        ("timestamp", "2026-01-01T00:00:00.123456+00:00", "ts:2026-01-01T00:00:00.123456+00:00"),
-        ("timestamp", "2026-01-01T00:00:00.9999999+00:00", None),  # PostgreSQL rounds, Python truncates
+        (
+            "timestamp",
+            "2026-01-01T00:00:00.123456+00:00",
+            "ts:2026-01-01T00:00:00.123456+00:00",
+        ),
+        (
+            "timestamp",
+            "2026-01-01T00:00:00.9999999+00:00",
+            None,
+        ),  # PostgreSQL rounds, Python truncates
     ],
 )
 def test_range_defaults_are_read_only_where_postgresql_reads_them_the_same(
