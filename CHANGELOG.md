@@ -2,6 +2,12 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.0.7 (2026-11-13)
+- platform: a refusal (401/403/409) whose body is HTML, a JSON non-object or a plain-string `detail` is a plain Denied (deny, no reason). It used to raise `JSONDecodeError`/`AttributeError`, so the API answered 500. A 201 without an `execution_id` object is PlatformUnavailable. Closes the strict xfail `test_a_refusal_with_a_non_json_body_is_still_a_denial`.
+- db: `LocalCluster.start` keeps its trust-auth socket in an owner-only directory: created 0700, an existing one of ours is tightened, a symlink or another user's directory is refused, and PostgreSQL gets `unix_socket_permissions=0700`. Before, on a shared `/tmp` (no `XDG_RUNTIME_DIR`) another local user could connect as any role. Security review P2.
+- Red: 9 tests in `test_cellkit_platform.py` and `test_cellkit_db.py` (on e931bdd).
+- Not in this release: the refs producer check still trusts the envelope's `producer` field (any finance producer credential can write the shared topic). Binding the origin needs signed envelopes or per-producer topics; see the open question in specs/001.
+
 ## 1.0.6 (2026-11-12)
 - mcp: `find_cell()` also looks in the repository that owns the virtualenv it runs in (`<repo>/.venv`). With the kit installed as a wheel, the old fallback was the kit's own location in site-packages, so `<cell>-mcp` started by absolute path from another directory (no `CELL_APP_ROOT`) exited with "cell.yaml not found". Codex review in finance-subscriptions-api. Red: `test_find_cell_uses_the_repository_that_owns_the_virtualenv` (on 508da1a).
 

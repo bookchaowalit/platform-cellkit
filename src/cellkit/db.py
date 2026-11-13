@@ -13,11 +13,13 @@ printed or stored in the repository.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -101,6 +103,24 @@ def pg_bin_dir(env: str) -> Path:
     )
 
 
+def _private_dir(path: Path) -> None:
+    """Create ``path`` owner-only (0700), or tighten ours; refuse a symlink or another user's."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileExistsError):
+        path.mkdir(mode=0o700)
+    info = os.lstat(path)
+    if stat.S_ISLNK(info.st_mode):
+        raise RuntimeError(f"socket directory {path} is a symlink; refusing")
+    if not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"socket directory {path} is not a directory")
+    if info.st_uid != os.getuid():
+        raise RuntimeError(
+            f"socket directory {path} is not owned by this user; refusing"
+        )
+    if info.st_mode & 0o077:
+        os.chmod(path, 0o700)
+
+
 @dataclass
 class LocalCluster:
     """A throwaway PostgreSQL for tests (trust auth over a private socket)."""
@@ -130,8 +150,12 @@ class LocalCluster:
         )
 
     def start(self) -> None:
-        self.socket_dir.mkdir(parents=True, exist_ok=True)
-        options = f"-c listen_addresses='' -k {self.socket_dir} -p {PORT}"
+        _private_dir(self.socket_dir)
+        # Trust auth: whoever can reach the socket is any role, so only this user may (dir + socket).
+        options = (
+            f"-c listen_addresses='' -c unix_socket_permissions=0700"
+            f" -k {self.socket_dir} -p {PORT}"
+        )
         self._run(
             "pg_ctl",
             "-D",

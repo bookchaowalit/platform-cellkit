@@ -72,6 +72,15 @@ def _checked_base(url: str) -> str:
     return checked_url(url)
 
 
+def _json_object(response: httpx.Response) -> dict[str, Any]:
+    """The body as a JSON object, or {} for an empty, non-JSON or non-object body."""
+    try:
+        data = response.json() if response.content else {}
+    except ValueError:  # json.JSONDecodeError and a body that is not valid text
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 class HttpPlatform:
     def __init__(
         self, base_url: str, timeout: float = 10.0, client: httpx.Client | None = None
@@ -136,15 +145,18 @@ class HttpPlatform:
             body["correlation_id"] = correlation_id
         response = self._post("/v1/executions", token, channel, body)
         if response.status_code in (401, 403, 409):
-            detail = response.json().get("detail", {}) if response.content else {}
+            # A gateway may answer with HTML or a plain-string detail: still a refusal, never a 500.
+            detail = _json_object(response).get("detail")
+            if not isinstance(detail, dict):
+                detail = {}
             raise Denied(
                 response.status_code,
                 str(detail.get("error", "deny")),
                 str(detail.get("reason", "")),
             )
-        if response.status_code != 201:
+        data = _json_object(response) if response.status_code == 201 else {}
+        if "execution_id" not in data:
             raise PlatformUnavailable(f"begin {response.status_code}")
-        data = response.json()
         return (
             uuid.UUID(data["execution_id"]),
             bool(data.get("replayed")),

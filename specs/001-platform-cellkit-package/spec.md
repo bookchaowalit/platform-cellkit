@@ -25,6 +25,22 @@ databases.
 - AC-03: a tag `vX.Y.Z` publishes a wheel, sdist and SHA256SUMS; a version mismatch or an existing release fails the job.
 - AC-04: a service that swaps `src/cellkit` for the pinned wheel keeps its generated migration SQL and passes its own test suite unchanged (checked per service at migration).
 
-## Known open item
+## Fixed open items
 
-`platform.py begin()` calls `.json()` on a non-JSON 403 (→ 500); pinned as strict xfail.
+- 1.0.7: `platform.py begin()` turns a non-JSON or odd-shaped refusal into Denied (was a 500).
+- 1.0.7: `LocalCluster` keeps its trust-auth socket owner-only (0700 dir and socket).
+
+## Open question (owner): who may speak for a kind in `finance.events.v1`
+
+`refs._apply` accepts an event only when the envelope's `producer` matches the kind's cell. Both
+fields are chosen by the sender. The Kafka ACL limits writers to the ten finance producer
+credentials, so a leaked credential of one cell can forge another cell's creates and deletes and
+make dependents look deletable. Options, all needing infrastructure or secrets:
+
+1. Signed envelopes: each producer signs with its own Ed25519 key (private key in Infisical and
+   the service's Railway vars). Consumers check against public keys pinned in the kit or in each
+   service's config. Rollout: sign, then verify in report mode, then enforce.
+2. One topic per producer (`finance.<cell>.events.v1`), each with a write ACL for that cell only.
+   The reader maps topic to kind. Needs Aiven topics and ACLs, plus moving the offset rows.
+
+Until then, the check stays as is. This is defence in depth, not authentication.
