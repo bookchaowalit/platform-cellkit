@@ -109,3 +109,29 @@ def test_patterned_samples_always_fit_max_length(pattern, limit):
         value = sample(f)
         assert len(value) <= limit, value
         assert re.fullmatch(pattern, value), value
+
+
+def test_a_unique_sample_prefers_varied_values_over_a_long_constant():
+    from cellkit.spec import Field
+    from cellkit.testing import sample
+
+    f = Field(
+        name="key",
+        type="text",
+        pattern=r"^(?:fixed-long|key-[0-9a-f]+)$",
+        max_length=10,
+        unique=True,
+    )
+    values = [sample(f) for _ in range(100)]
+    assert len(set(values)) >= 95
+
+
+def test_negated_categories_are_their_real_complements():
+    import re
+
+    from cellkit.spec import Field
+    from cellkit.testing import sample
+
+    for pattern in (r"^[^\W\d_]{3}$", r"^\D{4}$", r"^[\S]{2}$", r"^\W$"):
+        f = Field(name="key", type="text", pattern=pattern, max_length=4)
+        assert re.fullmatch(pattern, sample(f)), pattern
