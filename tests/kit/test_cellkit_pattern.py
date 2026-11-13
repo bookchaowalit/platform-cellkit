@@ -80,3 +80,31 @@ def test_patterned_samples_keep_enough_entropy_for_unique_fields():
     values = [sample(f) for _ in range(200)]
     assert len(set(values)) == len(values)
     assert all(len(v) >= len("key-") + 8 for v in values)
+
+
+def test_a_pattern_the_api_regex_engine_cannot_run_is_refused_when_the_spec_loads():
+    # Python and PostgreSQL accept lookaround; the API's (Rust) engine does not, so the app would
+    # fail at startup. Refuse it with the spec instead.
+    with pytest.raises(SpecError, match="API"):
+        cell_with({"type": "text", "pattern": "^(?!admin$)[a-z]+$"})
+
+
+@pytest.mark.parametrize(
+    ("pattern", "limit"),
+    [
+        (r"^[a-z0-9]+(-[a-z0-9]+)*$", 3),
+        (r"^(?:[a-z]+){3}$", 3),
+        (r"^key(-[0-9a-f]+)?$", 3),
+        (r"^[A-Z]{2}-[0-9]{1,4}$", 4),
+    ],
+)
+def test_patterned_samples_always_fit_max_length(pattern, limit):
+    import re
+
+    from cellkit.spec import Field
+    from cellkit.testing import sample
+
+    f = Field(name="key", type="text", pattern=pattern, max_length=limit)
+    for _ in range(300):
+        value = sample(f)
+        assert len(value) <= limit and re.fullmatch(pattern, value), value
