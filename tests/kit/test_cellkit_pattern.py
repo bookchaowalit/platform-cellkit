@@ -46,3 +46,14 @@ def test_the_api_model_refuses_a_value_that_does_not_match():
 def test_a_bad_pattern_is_refused_when_the_spec_loads(field, message):
     with pytest.raises(SpecError, match=message):
         cell_with(field)
+
+
+def test_the_test_sample_of_a_patterned_field_matches_the_pattern():
+    import re
+
+    from cellkit.spec import Field
+    from cellkit.testing import sample
+
+    for pattern in (r"^[a-z0-9][a-z0-9-]{0,9}$", r"^[A-Z]{3}$", r"^[0-9a-f]{8}$", r"^x-[0-9]+$"):
+        f = Field(name="key", type="text", pattern=pattern)
+        assert re.fullmatch(pattern, sample(f)), pattern

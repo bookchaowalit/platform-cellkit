@@ -1016,3 +1016,15 @@ def test_a_boolean_reference_is_malformed_not_empty():
         with pytest.raises(ValueError, match="integer"):
             refs._bigint(value)
     assert refs._bigint(None) is None
+
+
+def test_a_non_boolean_deleted_flag_is_malformed_not_a_delete():
+    """`deleted: "false"` (or 0, "yes") is refused and the message skipped, never read as a delete."""
+    from cellkit import refs
+
+    assert refs._flag(None) is False
+    assert refs._flag(True) is True
+    assert refs._flag(False) is False
+    for value in ("false", "true", 0, 1, [], {}):
+        with pytest.raises(ValueError, match="boolean"):
+            refs._flag(value)

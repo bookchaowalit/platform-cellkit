@@ -119,3 +119,40 @@ def test_roles_sql_creates_the_extra_roles_like_the_runtime_roles():
     )
     assert f"rolname = '{relay}'" in sql
     assert relay not in roles(parse(minimal()))
+
+
+def _echo_server(monkeypatch, **add_kwargs):
+    got: dict = {}
+
+    def register(ext: kit_mcp.Extension) -> None:
+        def handler(args: dict) -> object:
+            got["args"] = args
+            return ext.call("GET", "/v1/widgets")
+
+        ext.add("kit-sample.echo", EchoArgs, "Echo.", handler, **add_kwargs)
+
+    module = types.ModuleType("kit_ext_hook2")
+    module.register_mcp = register
+    monkeypatch.setitem(sys.modules, "kit_ext_hook2", module)
+    cell = replace(load(FIXTURE_SPEC), mcp_extend="kit_ext_hook2")
+    client = httpx.Client(
+        base_url="https://api.example",
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(200, json={}, request=r)
+        ),
+    )
+    return kit_mcp.build_server(cell, client, lambda: "tok-test-1234567890"), got
+
+
+def test_an_extension_write_tool_can_keep_an_explicit_null(monkeypatch):
+    server, got = _echo_server(monkeypatch, keep_null=True)
+    asyncio.run(server.call_tool("kit-sample.echo", {"text": "hi", "note": None}))
+    assert got["args"] == {"text": "hi", "note": None}
+    asyncio.run(server.call_tool("kit-sample.echo", {"text": "hi"}))
+    assert got["args"] == {"text": "hi"}  # unset stays unset
+
+
+def test_extension_tools_drop_nulls_by_default_like_list_filters(monkeypatch):
+    server, got = _echo_server(monkeypatch)
+    asyncio.run(server.call_tool("kit-sample.echo", {"text": "hi", "note": None}))
+    assert got["args"] == {"text": "hi"}
