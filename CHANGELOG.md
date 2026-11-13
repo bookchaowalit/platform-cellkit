@@ -2,6 +2,9 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.4 (2026-11-13)
+- app: a NaN or Infinity numeric range default is never compared. It is left to the database instead of raising InvalidOperation, which used to make the create return 500. Codex review of 1.1.3. Red: 7469d80.
+
 ## 1.1.3 (2026-11-13)
 - app: the 1.1.2 rounding now works at the column's precision. A `decimal` default with 30 digits raised InvalidOperation in Python's 28-digit context, which made the create return 500. A value the column cannot hold is left to the database. Codex review. Red: 806575d.
 

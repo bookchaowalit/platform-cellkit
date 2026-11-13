@@ -326,9 +326,13 @@ def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
                     # numeric(30, 10). A value the column cannot hold is left to the database.
                     with localcontext() as ctx:
                         ctx.prec = precision + 2
-                        out[f.name] = Decimal(str(f.default)).quantize(
-                            Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
-                        )
+                        exact = Decimal(str(f.default))
+                        if (
+                            exact.is_finite()
+                        ):  # NaN/Infinity: never compared, left to the DB
+                            out[f.name] = exact.quantize(
+                                Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
+                            )
                 except ArithmeticError:
                     pass
                 continue
