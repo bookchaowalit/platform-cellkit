@@ -153,6 +153,10 @@ def _batch(
     sent = failed = 0
     # SPEC-002: read before any row is touched, so a bad key sends (and marks) nothing.
     key = signing.signer(cell)
+    if key is None and signing.mode(cell) == "enforce":
+        # A lost secret arrives as "" from GitHub Actions; under enforce an unsigned event would be
+        # dropped by every consumer, so send nothing and fail instead.
+        raise signing.BadKey("missing signing key")
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
     blocked: set[tuple[str, str]] = set()
     deadline = time.monotonic() + time_budget
@@ -284,8 +288,9 @@ def main(argv: list[str] | None = None) -> int:
     except psycopg.Error as exc:
         print(json.dumps({"error": type(exc).__name__}))
         return 1
-    except signing.BadKey as exc:
-        # "bad signing key" or "bad event keys": the message never carries the value.
+    except (signing.BadKey, _refs_unavailable()) as exc:
+        # "bad signing key", "missing signing key", "bad event keys" or a reference-read reason:
+        # fixed texts that never carry a value.
         print(json.dumps({"error": str(exc)}))
         return 2
     out: dict[str, Any] = {
@@ -299,6 +304,12 @@ def main(argv: list[str] | None = None) -> int:
         out["signatures"] = {v: refs.SIGNATURES[v] for v in signing.VERDICTS}
     print(json.dumps(out))
     return 1 if totals["failed"] else 0
+
+
+def _refs_unavailable() -> type[Exception]:
+    from cellkit import refs
+
+    return refs.Unavailable
 
 
 def _catch_up_references(conn: psycopg.Connection[Any], cell: Cell) -> int:

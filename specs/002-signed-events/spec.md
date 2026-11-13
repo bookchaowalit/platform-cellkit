@@ -64,3 +64,5 @@ against the public keys pinned for the cell named in the event's `type`.
 - AC-03: with no signing key the relay's output is byte-identical to 1.0.11.
 - AC-04: a bad signing key fails the relay with `bad signing key`, without its value.
 - AC-05: an unknown mode is `enforce`.
+- AC-06 (1.1.1): a cell in `enforce` without a signing key relays nothing and fails with
+  `missing signing key`, so a lost secret never sends events that consumers would drop.
