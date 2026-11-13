@@ -1,6 +1,6 @@
 [project]
 name = "platform-cellkit"
-version = "1.0.11"
+version = "1.1.0"
 description = "Cell toolkit: one cell.yaml drives a microservice's API, migrations, roles, publisher and MCP server"
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -9,6 +9,8 @@ dependencies = [
     "psycopg[binary]>=3.2,<4",
     "fastapi>=0.115,<1",
     "pyjwt[crypto]>=2.10,<3",
+    # Ed25519 event signatures (SPEC-002); also what pyjwt[crypto] uses.
+    "cryptography>=43",
     # [standard] = uvloop + httptools: +82% RPS in polyglot-benchmark-lab, and avoids the h11 Nagle stall
     "uvicorn[standard]>=0.30,<1",
     "httpx>=0.27,<1",

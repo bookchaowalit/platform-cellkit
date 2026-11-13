@@ -2,6 +2,11 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.0 (2026-11-13)
+- SPEC-002, signed finance events (owner approved 2026-11-13): each producer signs its envelopes with its own Ed25519 key, set in `<CELL>_EVENT_SIGNING_KEY`. Consumers check the signature against the keys pinned in `<CELL>_EVENT_KEYS` for the cell named in the event's type. `<CELL>_EVENT_SIGNATURES` is `off` (the default), `report` (count, then apply) or `enforce` (apply only `valid`). The hourly relay job prints the counts. With nothing set, the behaviour and the envelopes are unchanged. A bad key fails the relay with `bad signing key`, and the value is never printed. This answers the specs/001 open question (the producer field could be forged).
+- New dependency, `cryptography>=43`, which pyjwt[crypto] already pulled in.
+- Red: 00ae032.
+
 ## 1.0.11 (2026-11-13)
 - app: a create fills in defaults only for the fields in `ranges`. A default the API type cannot take, such as `text` with `default: 0`, is left to the database. 1.0.10 could answer 500 for such a field even on a resource without ranges.
 - testing: patterned samples first try the old truncated `<name>-<hex>`, then pick the rarest generated match, so a fixed branch no longer repeats on unique fields. `\W`, `\D` and `\S` are real complements, and an empty character set is a clear error.

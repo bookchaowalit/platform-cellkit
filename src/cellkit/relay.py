@@ -30,6 +30,7 @@ from typing import Any, Protocol
 import psycopg
 from psycopg.rows import dict_row
 
+from cellkit import signing
 from cellkit.spec import Cell, load
 
 TOPIC = "finance.events.v1"
@@ -150,6 +151,8 @@ def _batch(
 ) -> RelayResult:
     schema = cell.schema
     sent = failed = 0
+    # SPEC-002: read before any row is touched, so a bad key sends (and marks) nothing.
+    key = signing.signer(cell)
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
     blocked: set[tuple[str, str]] = set()
     deadline = time.monotonic() + time_budget
@@ -160,7 +163,9 @@ def _batch(
         if record in blocked:
             continue  # an earlier event of this record failed in this run
         try:
-            publisher.publish(TOPIC, str(row["subject"]), envelope(cell, row))
+            publisher.publish(
+                TOPIC, str(row["subject"]), signing.maybe_sign(envelope(cell, row), key)
+            )
         except Exception as exc:  # noqa: BLE001 - recorded on the row (class only), retried after backoff
             cur.execute(
                 f"UPDATE {schema}.outbox SET relay_attempts = relay_attempts + 1, relay_error = %s,"
@@ -279,11 +284,20 @@ def main(argv: list[str] | None = None) -> int:
     except psycopg.Error as exc:
         print(json.dumps({"error": type(exc).__name__}))
         return 1
-    print(
-        json.dumps(
-            {**totals, "oldest_unsent_seconds": round(backlog), "refs_read": refs_read}
-        )
-    )
+    except signing.BadKey as exc:
+        # "bad signing key" or "bad event keys": the message never carries the value.
+        print(json.dumps({"error": str(exc)}))
+        return 2
+    out: dict[str, Any] = {
+        **totals,
+        "oldest_unsent_seconds": round(backlog),
+        "refs_read": refs_read,
+    }
+    from cellkit import refs
+
+    if refs.SIGNATURES:
+        out["signatures"] = {v: refs.SIGNATURES[v] for v in signing.VERDICTS}
+    print(json.dumps(out))
     return 1 if totals["failed"] else 0
 
 

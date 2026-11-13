@@ -18,12 +18,13 @@ import os
 import tempfile
 import time
 import uuid
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Callable, Mapping
 from typing import Any, Protocol
 
 import psycopg
 
-from cellkit import relay
+from cellkit import relay, signing
 from cellkit.spec import Cell, Field, Resource
 
 TOPIC = relay.TOPIC
@@ -31,6 +32,8 @@ CATCH_UP_SECONDS = 5.0
 READ_SHARE = 0.6  # of the catch-up deadline; applying gets the rest
 # Only the test harness sets this (cellkit.testing): writes then accept any id without a lookup.
 AUTOTRUST = False
+# SPEC-002 verdicts since the process started (or the job's last clear); counts only, never values.
+SIGNATURES: Counter[str] = Counter()
 
 
 class Unavailable(RuntimeError):
@@ -167,7 +170,32 @@ def _flag(value: Any) -> bool:
     )  # bool("false") is True: never read a string as a delete
 
 
-def _apply(cur: Any, cell: Cell, envelope: Mapping[str, Any]) -> bool:
+Check = Callable[[Mapping[str, Any], str], bool]
+
+
+def _signature_check(cell: Cell) -> Check | None:
+    """SPEC-002: None when off; else a check that counts each verdict and says whether to apply."""
+    mode = signing.mode(cell)
+    if mode == "off":
+        return None
+    try:
+        keys = signing.keys(cell)
+    except signing.BadKey:
+        if mode == "enforce":
+            raise Unavailable("bad event keys") from None
+        keys = {}  # report: everything counts as unknown_producer, nothing is refused
+
+    def check(envelope: Mapping[str, Any], producer: str) -> bool:
+        verdict = signing.verdict(envelope, producer, keys)
+        SIGNATURES[verdict] += 1
+        return mode == "report" or verdict == "valid"
+
+    return check
+
+
+def _apply(
+    cur: Any, cell: Cell, envelope: Mapping[str, Any], check: Check | None = None
+) -> bool:
     """Apply one event; False when it is not one this cell learns from. Raises on a bad message."""
     kind = _kind(envelope)
     targets = {f.references for r in cell.resources for f in r.fields if f.references}
@@ -179,6 +207,9 @@ def _apply(cur: Any, cell: Cell, envelope: Mapping[str, Any]) -> bool:
     # Only the producer named in the type may speak for that kind (the Kafka ACL limits writers to
     # the ten finance producers; a forged producer field is refused here).
     if str(envelope.get("producer")) != kind.split(".")[0]:
+        return False
+    # SPEC-002: and, once signatures are on, only with that producer's key.
+    if check is not None and not check(envelope, kind.split(".")[0]):
         return False
     data = envelope.get("data")
     if not isinstance(data, Mapping):
@@ -244,6 +275,7 @@ def catch_up(
 ) -> int:
     """Read what is new on the topic into the reference tables; returns the messages read."""
     s = cell.schema
+    check = _signature_check(cell)
     with conn.transaction():
         cur = conn.cursor()
         cur.execute(
@@ -290,7 +322,7 @@ def catch_up(
             # applied in its own savepoint and the read position moves past it either way.
             try:
                 with conn.transaction():
-                    _apply(cur, cell, envelope)
+                    _apply(cur, cell, envelope, check)
             except (
                 KeyError,
                 TypeError,

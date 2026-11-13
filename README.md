@@ -13,7 +13,7 @@ runs on its own, holds service code or data, or merges services together.
 ```toml
 # pyproject.toml
 dependencies = [
-    "platform-cellkit[mcp] @ https://github.com/bookchaowalit/platform-cellkit/releases/download/v1.0.11/platform_cellkit-1.0.11-py3-none-any.whl",
+    "platform-cellkit[mcp] @ https://github.com/bookchaowalit/platform-cellkit/releases/download/v1.1.0/platform_cellkit-1.1.0-py3-none-any.whl",
 ]
 # add [kafka] for cells that relay their outbox or check cross-cell references (finance)
 
@@ -44,6 +44,9 @@ from cellkit.contract import *
 | `extra_roles: [relay]` | login roles beyond api and publisher |
 | field `pattern: ^...$` | anchored regex, enforced by the API and a CHECK constraint |
 | field `references: <cell>.<resource>` | cross-cell reference (SPEC-006, needs `[kafka]`) |
+
+Signed events (SPEC-002, `specs/002-signed-events`): `<CELL>_EVENT_SIGNING_KEY` on the producer;
+`<CELL>_EVENT_KEYS` and `<CELL>_EVENT_SIGNATURES=off|report|enforce` on consumers.
 
 ## Changing the kit
 

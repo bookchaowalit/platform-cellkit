@@ -43,4 +43,4 @@ make dependents look deletable. Options, all needing infrastructure or secrets:
 2. One topic per producer (`finance.<cell>.events.v1`), each with a write ACL for that cell only.
    The reader maps topic to kind. Needs Aiven topics and ACLs, plus moving the offset rows.
 
-Until then, the check stays as is. This is defence in depth, not authentication.
+Decided 2026-11-13: option 1, signed envelopes. See specs/002-signed-events (kit 1.1.0).
