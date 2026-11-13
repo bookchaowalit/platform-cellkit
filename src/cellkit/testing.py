@@ -94,7 +94,7 @@ def spec_from(root: Path) -> Cell:
     return load(root / "cell.yaml")
 
 
-def _matching(pattern: str, limit: int) -> str:
+def _matching(pattern: str, limit: int, name: str = "x") -> str:
     """A random string that fully matches ``pattern`` (the simple regexes cell.yaml uses)."""
     import re
     import secrets
@@ -139,7 +139,6 @@ def _matching(pattern: str, limit: int) -> str:
             elif op in (parser.MAX_REPEAT, parser.MIN_REPEAT):
                 low, high, sub = arg
                 high = min(high, low + 8)
-                low = max(low, min(1, high))  # prefer at least one when allowed
                 count = low + secrets.randbelow(high - low + 1)
                 text += "".join(build(sub) for _ in range(count))
             elif op is parser.SUBPATTERN:
@@ -149,11 +148,20 @@ def _matching(pattern: str, limit: int) -> str:
             # AT (^ $) adds nothing
         return text
 
-    tree = parser.parse(pattern)
-    for _ in range(50):
-        value = build(tree)
+    # The old sample (name-<8 hex>) and plain hex keep their entropy when the pattern allows them.
+    token = uuid.uuid4().hex
+    for value in (f"{name}-{token[:8]}", f"{name}{token[:8]}", token[:8], token):
         if len(value) <= limit and re.fullmatch(pattern, value):
             return value
+    # Otherwise generate: of the matches that fit, the longest carries the most randomness.
+    tree = parser.parse(pattern)
+    fits = [
+        v
+        for v in (build(tree) for _ in range(64))
+        if len(v) <= limit and re.fullmatch(pattern, v)
+    ]
+    if fits:
+        return max(fits, key=len)
     raise ValueError(
         f"cannot make a test sample for pattern {pattern!r}; give the field a default"
     )
@@ -165,7 +173,7 @@ def sample(f: Field, n: int = 0) -> Any:
         return f.values[n % len(f.values)]
     if f.type == "text":
         if f.pattern:
-            return _matching(f.pattern, f.max_length or 200)
+            return _matching(f.pattern, f.max_length or 200, f.name)
         return f"{f.name}-{uuid.uuid4().hex[:8]}"[: f.max_length or 200]
     if f.type in ("int", "bigint", "real"):
         low = f.min if f.min is not None else 1
