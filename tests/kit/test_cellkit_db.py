@@ -88,6 +88,53 @@ def test_stopping_a_cluster_that_is_not_running_does_nothing(
     assert calls == []
 
 
+def _started(mini_cell, socket_dir, monkeypatch) -> list[Any]:
+    calls: list[Any] = []
+    monkeypatch.setattr(LocalCluster, "_run", lambda self, *args: calls.append(args))
+    LocalCluster(Names(mini_cell), socket_dir.parent / "pgdata", socket_dir).start()
+    return calls
+
+
+def test_the_trust_auth_socket_lives_in_an_owner_only_directory(
+    mini_cell, tmp_path, monkeypatch
+):
+    sock = tmp_path / "sock"
+    calls = _started(mini_cell, sock, monkeypatch)
+    assert sock.stat().st_mode & 0o777 == 0o700
+    options = calls[0][calls[0].index("-o") + 1]
+    assert "unix_socket_permissions=0700" in options
+
+
+def test_a_shared_socket_directory_of_ours_is_tightened(
+    mini_cell, tmp_path, monkeypatch
+):
+    sock = tmp_path / "sock"
+    sock.mkdir(mode=0o777)
+    os.chmod(sock, 0o777)
+    _started(mini_cell, sock, monkeypatch)
+    assert sock.stat().st_mode & 0o777 == 0o700
+
+
+def test_a_socket_directory_owned_by_someone_else_is_refused(
+    mini_cell, tmp_path, monkeypatch
+):
+    sock = tmp_path / "sock"
+    sock.mkdir()
+    real = os.getuid()
+    monkeypatch.setattr(db.os, "getuid", lambda: real + 1)
+    with pytest.raises(RuntimeError, match="not owned"):
+        _started(mini_cell, sock, monkeypatch)
+
+
+def test_a_symlinked_socket_directory_is_refused(mini_cell, tmp_path, monkeypatch):
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    sock = tmp_path / "sock"
+    sock.symlink_to(target)
+    with pytest.raises(RuntimeError, match="symlink"):
+        _started(mini_cell, sock, monkeypatch)
+
+
 def test_the_default_cluster_is_local_unless_hosted_is_asked_for(
     mini_cell, monkeypatch, tmp_path
 ):

@@ -250,15 +250,29 @@ def test_other_begin_statuses_fail_closed():
         platform.begin(TOKEN, "api", ACTION, None, None)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BUG: a 403 from the platform or a gateway with a non-JSON body (e.g. an HTML page) raises "
-    "json.JSONDecodeError; the API only maps Denied and PlatformUnavailable, so the caller gets a 500 "
-    "instead of a refusal. Nothing is written either way.",
+@pytest.mark.parametrize(
+    ("status", "raw"),
+    [
+        (403, b"<html>Forbidden</html>"),  # a gateway's HTML page
+        (401, b"[1, 2]"),  # JSON, but not an object
+        (409, b'{"detail": "conflict"}'),  # FastAPI's plain-string detail
+        (403, b'{"detail": [1]}'),
+    ],
 )
-def test_a_refusal_with_a_non_json_body_is_still_a_denial():
-    platform = platform_with(record([], status=403, raw=b"<html>Forbidden</html>"))
-    with pytest.raises(Denied):
+def test_a_refusal_with_an_unexpected_body_is_still_a_plain_denial(status, raw):
+    platform = platform_with(record([], status=status, raw=raw))
+    with pytest.raises(Denied) as info:
+        platform.begin(TOKEN, "api", ACTION, None, None)
+    assert (info.value.status, info.value.decision, info.value.reason) == (
+        status,
+        "deny",
+        "",
+    )
+
+
+def test_a_success_with_a_non_json_body_is_unavailable_not_a_crash():
+    platform = platform_with(record([], status=201, raw=b"<html>ok</html>"))
+    with pytest.raises(PlatformUnavailable, match="begin 201"):
         platform.begin(TOKEN, "api", ACTION, None, None)
 
 
