@@ -76,3 +76,28 @@ def test_a_numeric_range_default_is_rounded_to_the_column_scale_like_postgresql(
     filled = with_defaults(r, {"high": Decimal("10.0000")})
     assert filled["low"] == Decimal("10.0001")
     assert range_errors(r, filled) == ["high", "low"]
+
+
+def test_a_wide_decimal_range_default_never_breaks_a_create():
+    from decimal import Decimal
+
+    from cellkit.app import with_defaults
+    from cellkit.spec import parse
+
+    wide = "12345678901234567890.1234567890"  # 30 digits: fits numeric(30,10), not a 28-digit context
+    cell = parse(
+        {
+            "cell": "kit",
+            "resources": {
+                "band": {
+                    "fields": {
+                        "low": {"type": "decimal", "default": wide},
+                        "high": {"type": "decimal"},
+                    },
+                    "ranges": [["low", "high"]],
+                }
+            },
+        }
+    )
+    filled = with_defaults(cell.resource("band"), {"high": Decimal(1)})
+    assert filled["low"] == Decimal(wide)
