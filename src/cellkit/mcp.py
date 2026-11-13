@@ -284,13 +284,15 @@ class Extension:
     """What a cell's ``mcp_extend`` hook gets to add tools that follow the same rules.
 
     ``call(method, path, **httpx_kwargs)`` reaches the cell API as the caller; ``add(name, model,
-    description, handler)`` registers a strict tool whose handler gets the validated arguments
-    (unset ones dropped).
+    description, handler, keep_null=False)`` registers a strict tool whose handler gets the
+    validated arguments. By default nulls are dropped, like list filters; a write tool passes
+    ``keep_null=True`` to get exactly what the caller set (an explicit null clears a field, unset
+    arguments stay out).
     """
 
     cell: Cell
     call: Callable[..., Any]
-    add: Callable[[str, type[Strict], str, Callable[[dict[str, Any]], Any]], None]
+    add: Callable[..., None]
     read_only: bool
 
 
@@ -501,8 +503,8 @@ def build_server(
             Extension(
                 cell=cell,
                 call=call,
-                add=lambda name, model, description, handler: register(
-                    name, model, description, handler, drop_none=True
+                add=lambda name, model, description, handler, keep_null=False: register(
+                    name, model, description, handler, drop_none=not keep_null
                 ),
                 read_only=read_only,
             )

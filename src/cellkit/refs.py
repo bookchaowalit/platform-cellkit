@@ -156,6 +156,17 @@ def _bigint(value: Any) -> int | None:
     return number
 
 
+def _flag(value: Any) -> bool:
+    """A JSON boolean, or False for null; "false", 0 and anything else are malformed."""
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    raise ValueError(
+        "not a boolean"
+    )  # bool("false") is True: never read a string as a delete
+
+
 def _apply(cur: Any, cell: Cell, envelope: Mapping[str, Any]) -> bool:
     """Apply one event; False when it is not one this cell learns from. Raises on a bad message."""
     kind = _kind(envelope)
@@ -180,7 +191,7 @@ def _apply(cur: Any, cell: Cell, envelope: Mapping[str, Any]) -> bool:
     # The producer's outbox seq orders a record's events, also across a re-created legacy id (its
     # version starts again at 1), and makes a redelivered old event a no-op.
     seq = _bigint(data.get("event_seq")) or 0
-    deleted = bool(data.get("deleted"))
+    deleted = _flag(data.get("deleted"))
     if not deleted:
         for _r, source in sources:
             # A live record's event always carries its reference fields (None when unset); one

@@ -54,6 +54,11 @@ def test_the_test_sample_of_a_patterned_field_matches_the_pattern():
     from cellkit.spec import Field
     from cellkit.testing import sample
 
-    for pattern in (r"^[a-z0-9][a-z0-9-]{0,9}$", r"^[A-Z]{3}$", r"^[0-9a-f]{8}$", r"^x-[0-9]+$"):
+    for pattern in (
+        r"^[a-z0-9][a-z0-9-]{0,9}$",
+        r"^[A-Z]{3}$",
+        r"^[0-9a-f]{8}$",
+        r"^x-[0-9]+$",
+    ):
         f = Field(name="key", type="text", pattern=pattern)
         assert re.fullmatch(pattern, sample(f)), pattern

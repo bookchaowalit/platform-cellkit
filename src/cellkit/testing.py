@@ -94,11 +94,78 @@ def spec_from(root: Path) -> Cell:
     return load(root / "cell.yaml")
 
 
+def _matching(pattern: str, limit: int) -> str:
+    """A random string that fully matches ``pattern`` (the simple regexes cell.yaml uses)."""
+    import re
+    import secrets
+    import string
+    from re import _parser as parser  # type: ignore[attr-defined]
+
+    printable = list(string.ascii_letters + string.digits + "-_")
+
+    def chars(items: Any) -> list[str]:
+        out: list[str] = []
+        negate = False
+        for op, arg in items:
+            if op is parser.NEGATE:
+                negate = True
+            elif op is parser.LITERAL:
+                out.append(chr(arg))
+            elif op is parser.RANGE:
+                out += [chr(c) for c in range(arg[0], arg[1] + 1)]
+            elif op is parser.CATEGORY:
+                out += {
+                    parser.CATEGORY_DIGIT: list(string.digits),
+                    parser.CATEGORY_WORD: list(
+                        string.ascii_letters + string.digits + "_"
+                    ),
+                    parser.CATEGORY_SPACE: [" "],
+                }.get(arg, printable)
+        return [c for c in printable if c not in out] if negate else out
+
+    def build(tree: Any) -> str:
+        text = ""
+        for op, arg in tree:
+            if op is parser.LITERAL:
+                text += chr(arg)
+            elif op is parser.NOT_LITERAL:
+                text += secrets.choice([c for c in printable if ord(c) != arg])
+            elif op is parser.ANY:
+                text += secrets.choice(printable)
+            elif op is parser.IN:
+                text += secrets.choice(chars(arg))
+            elif op is parser.CATEGORY:
+                text += secrets.choice(chars([(op, arg)]))
+            elif op in (parser.MAX_REPEAT, parser.MIN_REPEAT):
+                low, high, sub = arg
+                high = min(high, low + 8)
+                low = max(low, min(1, high))  # prefer at least one when allowed
+                count = low + secrets.randbelow(high - low + 1)
+                text += "".join(build(sub) for _ in range(count))
+            elif op is parser.SUBPATTERN:
+                text += build(arg[-1])
+            elif op is parser.BRANCH:
+                text += build(secrets.choice(arg[1]))
+            # AT (^ $) adds nothing
+        return text
+
+    tree = parser.parse(pattern)
+    for _ in range(50):
+        value = build(tree)
+        if len(value) <= limit and re.fullmatch(pattern, value):
+            return value
+    raise ValueError(
+        f"cannot make a test sample for pattern {pattern!r}; give the field a default"
+    )
+
+
 def sample(f: Field, n: int = 0) -> Any:
     """A valid value for a field (refs are filled in by the caller)."""
     if f.type == "enum":
         return f.values[n % len(f.values)]
     if f.type == "text":
+        if f.pattern:
+            return _matching(f.pattern, f.max_length or 200)
         return f"{f.name}-{uuid.uuid4().hex[:8]}"[: f.max_length or 200]
     if f.type in ("int", "bigint", "real"):
         low = f.min if f.min is not None else 1

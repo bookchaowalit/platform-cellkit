@@ -2,6 +2,13 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.0.8 (2026-11-13)
+- refs: `deleted` must be a JSON boolean or null. `"false"`, `0` and the like are malformed, and the message is skipped. Before, `bool("false")` read it as a delete and could clear a live dependent, which let a referenced record be deleted.
+- mcp: `Extension.add(..., keep_null=True)` gives a write tool exactly what the caller set: an explicit null clears a field and unset arguments stay out. The default is unchanged (nulls dropped, like list filters), so platform-intake's search tools behave as before.
+- testing: `sample()` makes a value that matches a text field's `pattern`, so the contract suite works for patterned cells. It raises a clear error for a pattern it cannot satisfy.
+- uv.lock records the package version again (it was left at 1.0.6 in 1.0.7).
+- Codex review of 9d5aa92. Red: 3 tests (on 1a5eac8).
+
 ## 1.0.7 (2026-11-13)
 - platform: a refusal (401/403/409) whose body is HTML, a JSON non-object or a plain-string `detail` is a plain Denied (deny, no reason). It used to raise `JSONDecodeError`/`AttributeError`, so the API answered 500. A 201 without an `execution_id` object is PlatformUnavailable. Closes the strict xfail `test_a_refusal_with_a_non_json_body_is_still_a_denial`.
 - db: `LocalCluster.start` keeps its trust-auth socket in an owner-only directory: created 0700, an existing one of ours is tightened, a symlink or another user's directory is refused, and PostgreSQL gets `unix_socket_permissions=0700`. Before, on a shared `/tmp` (no `XDG_RUNTIME_DIR`) another local user could connect as any role. Security review P2.
