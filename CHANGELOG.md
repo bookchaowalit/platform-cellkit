@@ -2,6 +2,9 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.6 (2026-11-13)
+- app: a timestamp range default with more than 6 fractional-second digits is left to the database, because PostgreSQL rounds it while Python truncates it. Codex review of 1.1.5. Red: b40b609.
+
 ## 1.1.5 (2026-11-13)
 - app: range defaults are read only in forms where PostgreSQL and the API agree: integers, finite numbers, exact numerics (rounded at the column's scale and precision), ISO dates, and ISO timestamps (naive means UTC). Any other default, such as `20260101`, `now()`, NaN or a boolean, is left to the database: it is not range-checked, and it can never fail or wrongly refuse a create. This replaces the API-input conversion (pydantic) that 1.0.10 to 1.1.4 used for defaults. Codex review. Red: 1161d03.
 

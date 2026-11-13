@@ -13,7 +13,7 @@ runs on its own, holds service code or data, or merges services together.
 ```toml
 # pyproject.toml
 dependencies = [
-    "platform-cellkit[mcp] @ https://github.com/bookchaowalit/platform-cellkit/releases/download/v1.1.5/platform_cellkit-1.1.5-py3-none-any.whl",
+    "platform-cellkit[mcp] @ https://github.com/bookchaowalit/platform-cellkit/releases/download/v1.1.6/platform_cellkit-1.1.6-py3-none-any.whl",
 ]
 # add [kafka] for cells that relay their outbox or check cross-cell references (finance)
 

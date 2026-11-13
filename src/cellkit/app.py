@@ -310,8 +310,8 @@ def _stored_default(f: Field) -> Any:
     """The value PostgreSQL stores for ``f.default``, or None when we cannot be sure of it.
 
     Only forms both sides read alike: integers, finite numbers, exact numerics (rounded at the
-    column's scale and precision), ISO dates and ISO timestamps (naive = UTC, the hosted session
-    time zone). Anything else (``20260101``, ``now()``, NaN, booleans) is left to the database.
+    column's scale and precision), ISO dates and ISO timestamps to the microsecond (naive = UTC,
+    the hosted session time zone). Anything else (``20260101``, ``now()``, NaN, booleans) is left to the database.
     """
     value = f.default
     if isinstance(value, bool):
@@ -343,6 +343,9 @@ def _stored_default(f: Field) -> Any:
         except ValueError:
             return None
     if f.type == "timestamp" and isinstance(value, str) and "-" in value[:5]:
+        # Past microseconds PostgreSQL rounds and Python truncates: not certain, leave it.
+        if re.search(r"\.\d{7,}", value):
+            return None
         try:
             moment = datetime.fromisoformat(value)
         except ValueError:
