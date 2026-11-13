@@ -177,6 +177,20 @@ class Resource:
         return found
 
 
+def _api_engine_accepts(pattern: str) -> bool:
+    """True when pydantic's (Rust) regex engine, which the API models use, compiles ``pattern``."""
+    from typing import Annotated
+
+    from pydantic import StringConstraints, TypeAdapter
+    from pydantic_core import SchemaError
+
+    try:
+        TypeAdapter(Annotated[str, StringConstraints(pattern=pattern)])
+    except SchemaError:
+        return False
+    return True
+
+
 def _extra_roles(value: Any) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(
         isinstance(item, str) and re.fullmatch(r"[a-z][a-z0-9]{0,20}", item)
@@ -289,6 +303,11 @@ def _field(name: str, raw: dict[str, Any], resource: str) -> Field:
             re.compile(raw["pattern"])
         except re.error as exc:
             raise SpecError(f"{resource}.{name}: invalid pattern ({exc})") from exc
+        if not _api_engine_accepts(raw["pattern"]):
+            raise SpecError(
+                f"{resource}.{name}: pattern uses a feature the API's regex engine lacks"
+                " (lookaround, backreferences)"
+            )
     if raw.get("json") not in (None, "array", "object"):
         raise SpecError(f"{resource}.{name}: json must be array or object")
     if raw.get("references") is not None and (

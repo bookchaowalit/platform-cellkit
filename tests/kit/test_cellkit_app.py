@@ -1,5 +1,3 @@
-
-
 def test_a_range_is_checked_with_the_field_defaults_filled_in():
     from cellkit.app import range_errors, with_defaults
     from cellkit.spec import parse

@@ -2,6 +2,12 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.0.10 (2026-11-13)
+- spec: a `pattern` that pydantic's Rust regex engine cannot compile (lookaround, backreferences) is refused when `cell.yaml` loads. Before, it loaded and then broke the API models at startup.
+- app: a create checks `ranges` on the row with the field defaults filled in, as the database will store it. Before, `end: 5` with `start` defaulting to 10 was accepted.
+- testing: patterned samples are built within `max_length` (repeat counts and branches respect the length left), so they never fail at random for a short field.
+- Codex review. Red: 4 tests (on 18e1840).
+
 ## 1.0.9 (2026-11-13)
 - testing: a patterned sample first tries the old `<name>-<8 hex>` (and plain hex), so unique fields keep their entropy. Only if the pattern refuses those does it generate a value, and then it keeps the longest match that fits. An optional group may now be left out, so `^key(-[0-9a-f]+)?$` with `max_length: 3` gives `key`. Codex review of 1.0.8. Red: 2 tests (on 8238888).
 

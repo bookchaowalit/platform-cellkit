@@ -123,9 +123,23 @@ def _matching(pattern: str, limit: int, name: str = "x") -> str:
                 }.get(arg, printable)
         return [c for c in printable if c not in out] if negate else out
 
-    def build(tree: Any) -> str:
+    state = parser.State()
+
+    def shortest(seq: Any) -> int:
+        """The fewest characters ``seq`` (a parsed pattern or a list of its items) can match."""
+        if not isinstance(seq, parser.SubPattern):
+            seq = parser.SubPattern(state, list(seq))
+        return int(seq.getwidth()[0])
+
+    def build(items: Any, budget: int) -> str:
+        """A match of ``items`` in at most ``budget`` characters when the pattern allows it."""
+        items = list(items)
+        tails = [shortest(items[k + 1 :]) for k in range(len(items))]
         text = ""
-        for op, arg in tree:
+        for k, (op, arg) in enumerate(items):
+            room = (
+                budget - len(text) - tails[k]
+            )  # what this item may use, leaving the rest theirs
             if op is parser.LITERAL:
                 text += chr(arg)
             elif op is parser.NOT_LITERAL:
@@ -138,13 +152,20 @@ def _matching(pattern: str, limit: int, name: str = "x") -> str:
                 text += secrets.choice(chars([(op, arg)]))
             elif op in (parser.MAX_REPEAT, parser.MIN_REPEAT):
                 low, high, sub = arg
+                each = shortest(sub)
                 high = min(high, low + 8)
+                if each:
+                    high = max(low, min(high, room // each))
                 count = low + secrets.randbelow(high - low + 1)
-                text += "".join(build(sub) for _ in range(count))
+                part = ""
+                for done in range(count):
+                    part += build(sub, room - len(part) - (count - done - 1) * each)
+                text += part
             elif op is parser.SUBPATTERN:
-                text += build(arg[-1])
+                text += build(arg[-1], room)
             elif op is parser.BRANCH:
-                text += build(secrets.choice(arg[1]))
+                fitting = [b for b in arg[1] if shortest(b) <= room] or list(arg[1])
+                text += build(secrets.choice(fitting), room)
             # AT (^ $) adds nothing
         return text
 
@@ -157,7 +178,7 @@ def _matching(pattern: str, limit: int, name: str = "x") -> str:
     tree = parser.parse(pattern)
     fits = [
         v
-        for v in (build(tree) for _ in range(64))
+        for v in (build(tree, limit) for _ in range(64))
         if len(v) <= limit and re.fullmatch(pattern, v)
     ]
     if fits:

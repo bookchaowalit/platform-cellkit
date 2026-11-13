@@ -107,4 +107,5 @@ def test_patterned_samples_always_fit_max_length(pattern, limit):
     f = Field(name="key", type="text", pattern=pattern, max_length=limit)
     for _ in range(300):
         value = sample(f)
-        assert len(value) <= limit and re.fullmatch(pattern, value), value
+        assert len(value) <= limit, value
+        assert re.fullmatch(pattern, value), value

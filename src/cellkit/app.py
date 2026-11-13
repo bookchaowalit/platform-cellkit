@@ -58,7 +58,7 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, BeforeValidator, ConfigDict, create_model
+from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, create_model
 from pydantic import Field as PydanticField
 
 from cellkit._sentry import capture
@@ -299,6 +299,15 @@ def range_errors(
         if low is not None and high is not None and low > high:
             bad |= {start, end}
     return sorted(bad)
+
+
+def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` plus each unsent field's default, as the API type (what the database will store)."""
+    out = dict(data)
+    for f in r.fields:
+        if f.default is not None and f.name not in out:
+            out[f.name] = TypeAdapter(_python_type(f)).validate_python(f.default)
+    return out
 
 
 def _ordered(value: Any) -> Any:
@@ -972,7 +981,8 @@ def create_app(
                     status_code=422,
                     detail={"error": "invalid_value", "fields": sorted(stamps)},
                 )
-            if bad := range_errors(r, data):
+            # The database fills in defaults, so a range is checked on the row as it will be stored.
+            if bad := range_errors(r, with_defaults(r, data)):
                 raise HTTPException(
                     status_code=422, detail={"error": "invalid_value", "fields": bad}
                 )
