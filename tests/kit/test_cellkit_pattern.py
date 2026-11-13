@@ -62,3 +62,21 @@ def test_the_test_sample_of_a_patterned_field_matches_the_pattern():
     ):
         f = Field(name="key", type="text", pattern=pattern)
         assert re.fullmatch(pattern, sample(f)), pattern
+
+
+def test_an_optional_group_may_be_left_out_to_fit_max_length():
+    from cellkit.spec import Field
+    from cellkit.testing import sample
+
+    f = Field(name="key", type="text", pattern=r"^key(-[0-9a-f]+)?$", max_length=3)
+    assert sample(f) == "key"
+
+
+def test_patterned_samples_keep_enough_entropy_for_unique_fields():
+    from cellkit.spec import Field
+    from cellkit.testing import sample
+
+    f = Field(name="key", type="text", pattern=r"^key-[0-9a-f]+$", unique=True)
+    values = [sample(f) for _ in range(200)]
+    assert len(set(values)) == len(values)
+    assert all(len(v) >= len("key-") + 8 for v in values)
