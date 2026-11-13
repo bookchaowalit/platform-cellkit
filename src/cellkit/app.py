@@ -62,8 +62,6 @@ from pydantic import (
     BaseModel,
     BeforeValidator,
     ConfigDict,
-    TypeAdapter,
-    ValidationError,
     create_model,
 )
 from pydantic import Field as PydanticField
@@ -308,38 +306,64 @@ def range_errors(
     return sorted(bad)
 
 
-def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
-    """``data`` plus the defaults of unsent range fields (what the database will store).
+def _stored_default(f: Field) -> Any:
+    """The value PostgreSQL stores for ``f.default``, or None when we cannot be sure of it.
 
-    Only range fields: no other field's default is read here. A default the API type cannot take
-    is left to the database (no range check on it) rather than failing the create.
+    Only forms both sides read alike: integers, finite numbers, exact numerics (rounded at the
+    column's scale and precision), ISO dates and ISO timestamps (naive = UTC, the hosted session
+    time zone). Anything else (``20260101``, ``now()``, NaN, booleans) is left to the database.
+    """
+    value = f.default
+    if isinstance(value, bool):
+        return None
+    if f.type in NUMERIC:
+        precision, scale = NUMERIC[f.type]
+        try:
+            with localcontext() as ctx:
+                ctx.prec = precision + 2
+                exact = Decimal(str(value))
+                if not exact.is_finite():
+                    return None
+                return exact.quantize(Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP)
+        except ArithmeticError:
+            return None
+    if f.type in ("int", "bigint"):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+            return int(value)
+        return None
+    if f.type == "real":
+        if isinstance(value, int | float) and math.isfinite(value):
+            return float(value)
+        return None
+    if f.type == "date" and isinstance(value, str) and len(value) == 10:
+        try:
+            return date.fromisoformat(value)
+        except ValueError:
+            return None
+    if f.type == "timestamp" and isinstance(value, str) and "-" in value[:5]:
+        try:
+            moment = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return moment if moment.tzinfo else moment.replace(tzinfo=UTC)
+    return None
+
+
+def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
+    """``data`` plus the defaults of unsent range fields, as the database will store them.
+
+    Only range fields are read, and only defaults whose stored value is certain (``_stored_default``);
+    the others are left to the database, so they never fail or wrongly refuse a create.
     """
     out = dict(data)
     in_ranges = {name for pair in r.ranges for name in pair}
     for f in r.fields:
         if f.name in in_ranges and f.default is not None and f.name not in out:
-            if f.type in NUMERIC:
-                # As PostgreSQL stores it: numeric(p, s) rounds half away from zero to s places.
-                precision, scale = NUMERIC[f.type]
-                try:
-                    # The column's own precision: the default 28-digit context is too small for
-                    # numeric(30, 10). A value the column cannot hold is left to the database.
-                    with localcontext() as ctx:
-                        ctx.prec = precision + 2
-                        exact = Decimal(str(f.default))
-                        if (
-                            exact.is_finite()
-                        ):  # NaN/Infinity: never compared, left to the DB
-                            out[f.name] = exact.quantize(
-                                Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
-                            )
-                except ArithmeticError:
-                    pass
-                continue
-            try:
-                out[f.name] = TypeAdapter(_python_type(f)).validate_python(f.default)
-            except ValidationError:
-                continue
+            stored = _stored_default(f)
+            if stored is not None:
+                out[f.name] = stored
     return out
 
 
