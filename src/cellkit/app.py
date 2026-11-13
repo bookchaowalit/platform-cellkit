@@ -37,7 +37,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation, localcontext
 from typing import Annotated, Any, Literal
 
 import psycopg
@@ -320,13 +320,17 @@ def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
         if f.name in in_ranges and f.default is not None and f.name not in out:
             if f.type in NUMERIC:
                 # As PostgreSQL stores it: numeric(p, s) rounds half away from zero to s places.
+                precision, scale = NUMERIC[f.type]
                 try:
-                    exact = Decimal(str(f.default))
+                    # The column's own precision: the default 28-digit context is too small for
+                    # numeric(30, 10). A value the column cannot hold is left to the database.
+                    with localcontext() as ctx:
+                        ctx.prec = precision + 2
+                        out[f.name] = Decimal(str(f.default)).quantize(
+                            Decimal(1).scaleb(-scale), rounding=ROUND_HALF_UP
+                        )
                 except ArithmeticError:
-                    continue
-                out[f.name] = exact.quantize(
-                    Decimal(1).scaleb(-NUMERIC[f.type][1]), rounding=ROUND_HALF_UP
-                )
+                    pass
                 continue
             try:
                 out[f.name] = TypeAdapter(_python_type(f)).validate_python(f.default)

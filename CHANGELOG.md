@@ -2,6 +2,9 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.3 (2026-11-13)
+- app: the 1.1.2 rounding now works at the column's precision. A `decimal` default with 30 digits raised InvalidOperation in Python's 28-digit context, which made the create return 500. A value the column cannot hold is left to the database. Codex review. Red: 806575d.
+
 ## 1.1.2 (2026-11-13)
 - app: a `money` or `decimal` default in a range is rounded the way PostgreSQL stores it (half away from zero, at the column scale) before the range check. Before, a default with more decimals was skipped, so the check never saw it. No service sets such a default, so services pick this up on their next bump. Codex review. Red: 48ddf88.
 
