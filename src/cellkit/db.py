@@ -118,6 +118,7 @@ def _private_dir(path: Path) -> None:
             f"socket directory {path} is not owned by this user; refusing"
         )
     if info.st_mode & 0o077:
+        # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- 0700 is owner-only (a directory needs x); this narrows a wider mode
         os.chmod(path, 0o700)
 
 
