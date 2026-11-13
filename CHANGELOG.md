@@ -2,6 +2,11 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.0.11 (2026-11-13)
+- app: a create fills in defaults only for the fields in `ranges`. A default the API type cannot take, such as `text` with `default: 0`, is left to the database. 1.0.10 could answer 500 for such a field even on a resource without ranges.
+- testing: patterned samples first try the old truncated `<name>-<hex>`, then pick the rarest generated match, so a fixed branch no longer repeats on unique fields. `\W`, `\D` and `\S` are real complements, and an empty character set is a clear error.
+- Codex review of 1.0.10. Red: 3 tests (on e237ae2).
+
 ## 1.0.10 (2026-11-13)
 - spec: a `pattern` that pydantic's Rust regex engine cannot compile (lookaround, backreferences) is refused when `cell.yaml` loads. Before, it loaded and then broke the API models at startup.
 - app: a create checks `ranges` on the row with the field defaults filled in, as the database will store it. Before, `end: 5` with `start` defaulting to 10 was accepted.

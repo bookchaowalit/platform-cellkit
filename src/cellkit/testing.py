@@ -103,25 +103,32 @@ def _matching(pattern: str, limit: int, name: str = "x") -> str:
 
     printable = list(string.ascii_letters + string.digits + "-_")
 
+    word = set(string.ascii_letters + string.digits + "_")
+    categories = {
+        parser.CATEGORY_DIGIT: set(string.digits),
+        parser.CATEGORY_NOT_DIGIT: set(printable) - set(string.digits),
+        parser.CATEGORY_WORD: word,
+        parser.CATEGORY_NOT_WORD: set(printable) - word,
+        parser.CATEGORY_SPACE: {" "},
+        parser.CATEGORY_NOT_SPACE: set(printable),
+    }
+
     def chars(items: Any) -> list[str]:
-        out: list[str] = []
+        out: set[str] = set()
         negate = False
         for op, arg in items:
             if op is parser.NEGATE:
                 negate = True
             elif op is parser.LITERAL:
-                out.append(chr(arg))
+                out.add(chr(arg))
             elif op is parser.RANGE:
-                out += [chr(c) for c in range(arg[0], arg[1] + 1)]
+                out |= {chr(c) for c in range(arg[0], arg[1] + 1)}
             elif op is parser.CATEGORY:
-                out += {
-                    parser.CATEGORY_DIGIT: list(string.digits),
-                    parser.CATEGORY_WORD: list(
-                        string.ascii_letters + string.digits + "_"
-                    ),
-                    parser.CATEGORY_SPACE: [" "],
-                }.get(arg, printable)
-        return [c for c in printable if c not in out] if negate else out
+                out |= categories.get(arg, set(printable))
+        pool = [c for c in printable if c not in out] if negate else sorted(out)
+        if not pool:
+            raise ValueError(f"no test character for {items!r}")
+        return pool
 
     state = parser.State()
 
@@ -171,10 +178,11 @@ def _matching(pattern: str, limit: int, name: str = "x") -> str:
 
     # The old sample (name-<8 hex>) and plain hex keep their entropy when the pattern allows them.
     token = uuid.uuid4().hex
-    for value in (f"{name}-{token[:8]}", f"{name}{token[:8]}", token[:8], token):
+    candidates = (f"{name}-{token[:8]}", f"{name}{token[:8]}", token[:8], token)
+    for value in (*candidates, f"{name}-{token}"[:limit], token[:limit]):
         if len(value) <= limit and re.fullmatch(pattern, value):
             return value
-    # Otherwise generate: of the matches that fit, the longest carries the most randomness.
+    # Otherwise generate, and pick from the matches that fit.
     tree = parser.parse(pattern)
     fits = [
         v
@@ -182,7 +190,8 @@ def _matching(pattern: str, limit: int, name: str = "x") -> str:
         if len(v) <= limit and re.fullmatch(pattern, v)
     ]
     if fits:
-        return max(fits, key=len)
+        # The rarest value carries the most randomness (a fixed branch repeats); then the longest.
+        return min(fits, key=lambda v: (fits.count(v), -len(v)))
     raise ValueError(
         f"cannot make a test sample for pattern {pattern!r}; give the field a default"
     )

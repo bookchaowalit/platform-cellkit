@@ -58,7 +58,14 @@ from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel, BeforeValidator, ConfigDict, TypeAdapter, create_model
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    TypeAdapter,
+    ValidationError,
+    create_model,
+)
 from pydantic import Field as PydanticField
 
 from cellkit._sentry import capture
@@ -302,11 +309,19 @@ def range_errors(
 
 
 def with_defaults(r: Resource, data: dict[str, Any]) -> dict[str, Any]:
-    """``data`` plus each unsent field's default, as the API type (what the database will store)."""
+    """``data`` plus the defaults of unsent range fields (what the database will store).
+
+    Only range fields: no other field's default is read here. A default the API type cannot take
+    is left to the database (no range check on it) rather than failing the create.
+    """
     out = dict(data)
+    in_ranges = {name for pair in r.ranges for name in pair}
     for f in r.fields:
-        if f.default is not None and f.name not in out:
-            out[f.name] = TypeAdapter(_python_type(f)).validate_python(f.default)
+        if f.name in in_ranges and f.default is not None and f.name not in out:
+            try:
+                out[f.name] = TypeAdapter(_python_type(f)).validate_python(f.default)
+            except ValidationError:
+                continue
     return out
 
 
