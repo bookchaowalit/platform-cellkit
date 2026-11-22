@@ -716,6 +716,33 @@ def create_app(
                     correlation_id.get(),
                 ),
             )
+            # SPEC-002 (platform-empire): the full target set of each catalog relation, ordered by the
+            # row's version; on create and when the mapped field changes (deletion retracts in the graph).
+            for link in r.catalog if after is not None else ():
+                if before is not None and before.get(link.field) == after.get(
+                    link.field
+                ):
+                    continue
+                work.conn.execute(
+                    f"INSERT INTO {schema}.outbox (workspace_id, type, subject, execution_id, classification,"
+                    " payload, correlation_id) VALUES (%s, %s, %s, %s, 'confidential', %s, %s)",
+                    (
+                        work.caller.workspace,
+                        f"{cell.name}.{r.name}.linked",
+                        f"empire:{cell.name}:{r.name}:{current['id']}",
+                        work.marker,
+                        json.dumps(
+                            {
+                                "relation": link.relation,
+                                "mode": "replace",
+                                "targets": link.targets(after.get(link.field)),
+                                "set_version": after.get("version", 1),
+                                "version": after.get("version", 1),
+                            }
+                        ),
+                        correlation_id.get(),
+                    ),
+                )
         return audit(r, verb, current["id"], before, after)
 
     def publish_soon(background: BackgroundTasks, caller: Principal) -> None:
