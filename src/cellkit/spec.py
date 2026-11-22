@@ -577,7 +577,7 @@ def _catalog(
                 f"{rname}.catalog.{relation}: the graph accepts it only from {sorted(allowed)}"
             )
         field_name = entry.get("field")
-        if field_name not in types:
+        if not isinstance(field_name, str) or field_name not in types:
             raise SpecError(
                 f"{rname}.catalog.{relation}: {field_name!r} is not a field"
             )

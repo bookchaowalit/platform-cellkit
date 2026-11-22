@@ -721,13 +721,13 @@ def create_app(
             catalog = r.catalog if after is not None else ()
             for link in catalog:
                 assert after is not None  # catalog is empty for a deletion
-                # compared by the mapped targets, the same rule the event is built from
-                wanted = link.targets(after.get(link.field))
-                if (
-                    before is not None
-                    and link.targets(before.get(link.field)) == wanted
+                # a change of the stored value (text/enum only) re-sends the set under the current mapping,
+                # even when an updated mapping sends the old and new values to the same slug
+                if before is not None and before.get(link.field) == after.get(
+                    link.field
                 ):
                     continue
+                wanted = link.targets(after.get(link.field))
                 work.conn.execute(
                     f"INSERT INTO {schema}.outbox (workspace_id, type, subject, execution_id, classification,"
                     " payload, correlation_id) VALUES (%s, %s, %s, %s, 'confidential', %s, %s)",

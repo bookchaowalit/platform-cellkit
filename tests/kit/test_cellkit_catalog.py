@@ -75,6 +75,7 @@ def base(catalog, graph=("title",), cell="sample", resource_name="thing"):
     [
         ({"related-to": {"field": "kind"}}, ("title",), "not one of"),
         ({"in-domain": {"field": "missing"}}, ("title",), "is not a field"),
+        ({"in-domain": {"field": ["kind"]}}, ("title",), "is not a field"),
         (
             {"in-domain": {"field": "kind", "map": {"a": "Bad Slug"}}},
             ("title",),
