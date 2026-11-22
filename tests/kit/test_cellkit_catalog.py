@@ -56,14 +56,18 @@ def test_catalog_set_events(client, owner, harness):
     assert len(set_events(harness, record["id"])) == 3
 
 
-def base(catalog, graph=("title",)):
+def base(catalog, graph=("title",), cell="sample", resource_name="thing"):
     resource = {
-        "fields": {"title": {"type": "text"}, "kind": {"type": "text"}},
+        "fields": {
+            "title": {"type": "text"},
+            "kind": {"type": "text"},
+            "meta": {"type": "json"},
+        },
         "catalog": catalog,
     }
     if graph is not None:
         resource["graph"] = list(graph)
-    return {"cell": "sample", "resources": {"thing": resource}}
+    return {"cell": cell, "resources": {resource_name: resource}}
 
 
 @pytest.mark.parametrize(
@@ -79,6 +83,24 @@ def base(catalog, graph=("title",)):
         ({"in-domain": {"field": "kind", "extra": 1}}, ("title",), "keys are"),
         ({"in-domain": {"field": "kind"}}, None, "need graph events"),
         ([], ("title",), "mapping of relation"),
+        ({"serves-value": {"field": "kind"}}, ("title",), "accepts it only from"),
+        ({"in-domain": {"field": "meta"}}, ("title",), "text or enum"),
+        ({"in-domain": {"field": "kind", "map": []}}, ("title",), "mapping of value"),
+        (
+            {"in-domain": {"field": "kind", "map": False}},
+            ("title",),
+            "mapping of value",
+        ),
+        (
+            {"in-domain": {"field": "kind", "map": {True: "work"}}},
+            ("title",),
+            "map keys",
+        ),
+        (
+            {"in-domain": {"field": "kind", "default": "health\n"}},
+            ("title",),
+            "concept slug",
+        ),
     ],
 )
 def test_bad_catalog_links_are_refused(catalog, graph, message):
@@ -87,10 +109,12 @@ def test_bad_catalog_links_are_refused(catalog, graph, message):
 
 
 def test_serves_value_without_default_is_an_empty_set():
-    cell = parse(
-        base({"serves-value": {"field": "kind", "map": {"x": "freedom"}}}), Path(".")
+    spec = base(
+        {"serves-value": {"field": "kind", "map": {"x": "freedom"}}},
+        cell="goals",
+        resource_name="goal",
     )
-    [link] = cell.resources[0].catalog
+    [link] = parse(spec, Path(".")).resources[0].catalog
     assert link.targets("x") == ["empire:platform:value:freedom"]
     assert link.targets("y") == []
     assert link.targets(None) == []

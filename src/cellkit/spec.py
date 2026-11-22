@@ -123,6 +123,13 @@ class RefSource:
 # platform-empire SPEC-002: catalog relations a cell may assert from one of its fields, and the concept kind
 # each one points at (empire:platform:<kind>:<slug>, canonicalised by the graph with the event's workspace).
 CATALOG_RELATIONS = {"in-domain": "domain", "serves-value": "value"}
+# subjects each relation accepts (platform-empire graph.relation_types); None = any subject
+CATALOG_SUBJECTS: dict[str, frozenset[str] | None] = {
+    "in-domain": None,
+    "serves-value": frozenset({"goals:goal", "projects:project", "habits:habit"}),
+}
+# only plain text values map without conversion (the stored value is the map key as written)
+CATALOG_FIELD_TYPES = frozenset({"text", "enum"})
 CONCEPT_SLUG = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 
 
@@ -474,7 +481,7 @@ def parse(data: dict[str, Any], root: Path = Path(".")) -> Cell:
                     f"{rname}: referenced_by entries are '<cell>.<resource>.<field>'"
                 )
             referenced_by.append(RefSource(*parts))
-        catalog = _catalog(rname, raw.get("catalog"), names, graph)
+        catalog = _catalog(name, rname, raw.get("catalog"), fields, graph)
         resources.append(
             Resource(
                 name=rname,
@@ -545,8 +552,9 @@ def load(path: Path) -> Cell:
 
 
 def _catalog(
-    rname: str, raw: Any, names: set[str], graph: Any
+    cell_name: str, rname: str, raw: Any, fields: tuple[Field, ...], graph: Any
 ) -> tuple[CatalogLink, ...]:
+    types = {f.name: f.type for f in fields}
     if raw is None:
         return ()
     if not isinstance(raw, dict) or not raw:
@@ -563,19 +571,32 @@ def _catalog(
             )
         if not isinstance(entry, dict) or set(entry) - {"field", "map", "default"}:
             raise SpecError(f"{rname}.catalog.{relation}: keys are field, map, default")
+        allowed = CATALOG_SUBJECTS[relation]
+        if allowed is not None and f"{cell_name}:{rname}" not in allowed:
+            raise SpecError(
+                f"{rname}.catalog.{relation}: the graph accepts it only from {sorted(allowed)}"
+            )
         field_name = entry.get("field")
-        if field_name not in names:
+        if field_name not in types:
             raise SpecError(
                 f"{rname}.catalog.{relation}: {field_name!r} is not a field"
             )
-        mapping = entry.get("map") or {}
+        if types[field_name] not in CATALOG_FIELD_TYPES:
+            raise SpecError(
+                f"{rname}.catalog.{relation}: {field_name!r} must be a text or enum field"
+            )
+        mapping = entry.get("map", {})
         if not isinstance(mapping, dict):
             raise SpecError(
                 f"{rname}.catalog.{relation}: map is a mapping of value to slug"
             )
+        if not all(isinstance(key, str) for key in mapping):
+            raise SpecError(
+                f"{rname}.catalog.{relation}: map keys are the field's text values"
+            )
         default = entry.get("default")
         for slug in (*mapping.values(), *([default] if default is not None else [])):
-            if not isinstance(slug, str) or not CONCEPT_SLUG.match(slug):
+            if not isinstance(slug, str) or not CONCEPT_SLUG.fullmatch(slug):
                 raise SpecError(
                     f"{rname}.catalog.{relation}: {slug!r} is not a concept slug"
                 )

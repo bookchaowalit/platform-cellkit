@@ -718,9 +718,14 @@ def create_app(
             )
             # SPEC-002 (platform-empire): the full target set of each catalog relation, ordered by the
             # row's version; on create and when the mapped field changes (deletion retracts in the graph).
-            for link in r.catalog if after is not None else ():
-                if before is not None and before.get(link.field) == after.get(
-                    link.field
+            catalog = r.catalog if after is not None else ()
+            for link in catalog:
+                assert after is not None  # catalog is empty for a deletion
+                # compared by the mapped targets, the same rule the event is built from
+                wanted = link.targets(after.get(link.field))
+                if (
+                    before is not None
+                    and link.targets(before.get(link.field)) == wanted
                 ):
                     continue
                 work.conn.execute(
@@ -735,7 +740,7 @@ def create_app(
                             {
                                 "relation": link.relation,
                                 "mode": "replace",
-                                "targets": link.targets(after.get(link.field)),
+                                "targets": wanted,
                                 "set_version": after.get("version", 1),
                                 "version": after.get("version", 1),
                             }
