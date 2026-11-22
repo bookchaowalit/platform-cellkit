@@ -12,7 +12,7 @@ from cellkit.spec import SpecError, parse
 def set_events(harness, record_id: str) -> list[dict]:
     cell = harness.cell
     rows = harness.superuser(
-        f"SELECT payload FROM {cell.schema}.outbox WHERE subject = %s AND type = %s ORDER BY occurred_at, seq",
+        f"SELECT payload FROM {cell.schema}.outbox WHERE subject = %s AND type = %s ORDER BY occurred_at",
         (f"empire:{cell.name}:widget:{record_id}", f"{cell.name}.widget.linked"),
     )
     return [row[0] for row in rows]
