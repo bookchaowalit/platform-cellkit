@@ -8,7 +8,9 @@ Runs two ways:
   the ``<cell>_publisher`` role reads every workspace's outbox and retries with backoff.
 
 At-least-once and ordered per record (key = subject); consumers dedupe on the envelope ``id``.
-Only reference data leaves the cell (the resource's ``graph`` fields). The job prints counts only.
+Only reference data leaves the cell (the resource's ``graph`` fields): a SPEC-002 catalog set event
+(``<cell>.<resource>.linked``) is for the graph publisher alone and never relayed, since its targets
+come from a field outside ``graph``. The job prints counts only.
 
 Environment (``<CELL>`` = the cell's env prefix, e.g. ``BUDGETS``):
     <CELL>_KAFKA_BOOTSTRAP, <CELL>_KAFKA_CA_PEM, <CELL>_KAFKA_USERNAME, <CELL>_KAFKA_PASSWORD
@@ -84,6 +86,10 @@ def envelope(cell: Cell, row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+# SPEC-002 set events stay out of Kafka (no LIKE: the query also carries %s parameters)
+NOT_LINKED = "right({t}.type, 7) <> '.linked'"
+
+
 def _select(schema: str) -> str:
     table = f"{schema}.outbox"
     # A record's events go out in insert order (seq): the row lock serialises writes to one record,
@@ -94,6 +100,7 @@ def _select(schema: str) -> str:
         f"SELECT o.id, o.workspace_id, o.type, o.subject, o.execution_id, o.payload, o.occurred_at,"
         f" o.correlation_id, o.seq FROM {table} o"
         " WHERE o.relayed_at IS NULL AND (o.relay_next_at IS NULL OR o.relay_next_at <= now())"
+        f" AND {NOT_LINKED.format(t='o')}"
         f" AND NOT EXISTS (SELECT 1 FROM {table} f WHERE f.workspace_id = o.workspace_id"
         " AND f.subject = o.subject AND f.relayed_at IS NULL AND f.relay_next_at > now()"
         " AND f.seq < o.seq)"
@@ -193,7 +200,7 @@ def _batch(
 def oldest_unsent_seconds(conn: psycopg.Connection[Any], cell: Cell) -> float:
     row = conn.execute(
         "SELECT coalesce(extract(epoch FROM now() - min(occurred_at)), 0)"
-        f" FROM {cell.schema}.outbox WHERE relayed_at IS NULL"
+        f" FROM {cell.schema}.outbox o WHERE o.relayed_at IS NULL AND {NOT_LINKED.format(t='o')}"
     ).fetchone()
     conn.commit()
     return float(row[0]) if row else 0.0

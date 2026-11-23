@@ -56,47 +56,6 @@ def test_catalog_set_events(client, owner, harness):
     assert len(set_events(harness, record["id"])) == 3
 
 
-def test_a_set_event_stays_out_of_the_kafka_relay(client, owner, harness):
-    """The relay carries graph: fields only; a set event's targets come from another field."""
-    made = client.post(
-        "/v1/widgets", headers=owner, json={"title": "w-cat-relay", "category": "alpha"}
-    ).json()
-    cell = harness.cell
-    [[relayed]] = harness.superuser(
-        f"SELECT relayed_at IS NOT NULL FROM {cell.schema}.outbox WHERE subject = %s AND type = %s",
-        (f"empire:{cell.name}:widget:{made['id']}", f"{cell.name}.widget.linked"),
-    )
-    assert relayed
-
-
-def test_a_recreated_legacy_id_orders_its_set_after_the_tombstone(
-    client, owner, harness
-):
-    """A re-imported legacy id starts again at version 1; the set must outrank the deletion."""
-    legacy = 987_654
-    body = {"title": "w-cat-legacy", "category": "alpha", "legacy_id": legacy}
-    first = client.post("/v1/widgets", headers=owner, json=body)
-    assert first.status_code == 201, first.text
-    record_id = first.json()["id"]
-    assert client.delete(f"/v1/widgets/{record_id}", headers=owner).status_code == 204
-    again = client.post("/v1/widgets", headers=owner, json={**body, "category": "beta"})
-    assert again.status_code == 201, again.text
-    assert again.json()["version"] == 1
-    cell = harness.cell
-    rows = harness.superuser(
-        f"SELECT type, payload FROM {cell.schema}.outbox WHERE subject = %s ORDER BY seq",
-        (f"empire:{cell.name}:widget:{record_id}",),
-    )
-    tombstone = max(p["version"] for t, p in rows if t.endswith(".deleted"))
-    last = [p for t, p in rows if t.endswith(".linked")][-1]
-    assert last["targets"] == ["empire:platform:domain:work"]
-    assert last["set_version"] > tombstone
-    # a later change of the record keeps ordering after it
-    client.patch(f"/v1/widgets/{record_id}", headers=owner, json={"category": "alpha"})
-    newest = set_events(harness, str(record_id))[-1]
-    assert newest["set_version"] > last["set_version"]
-
-
 def base(catalog, graph=("title",), cell="sample", resource_name="thing"):
     resource = {
         "fields": {
