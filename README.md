@@ -44,6 +44,7 @@ from cellkit.contract import *
 | `extra_roles: [relay]` | login roles beyond api and publisher |
 | field `pattern: ^...$` | anchored regex, enforced by the API and a CHECK constraint |
 | field `references: <cell>.<resource>` | cross-cell reference (SPEC-006, needs `[kafka]`) |
+| resource `catalog: {in-domain: {field, map, default}}` | platform-empire SPEC-002: on create and when `field` changes, an outbox set event (`<cell>.<resource>.linked`, `mode: replace`, `targets: [empire:platform:domain:<slug>]`, `set_version` = the row's version); `serves-value` works the same with value slugs. Needs `graph:` |
 
 Signed events (SPEC-002, `specs/002-signed-events`): `<CELL>_EVENT_SIGNING_KEY` on the producer;
 `<CELL>_EVENT_KEYS` and `<CELL>_EVENT_SIGNATURES=off|report|enforce` on consumers.

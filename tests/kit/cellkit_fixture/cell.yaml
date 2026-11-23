@@ -11,6 +11,8 @@ resources:
     plural: widgets
     graph: [title, status]
     filters: [status, category]
+    catalog:
+      in-domain: {field: category, map: {alpha: health, beta: work}, default: unclassified}
     unique: [[title, category]]
     ranges: [[starts_on, ends_on]]
     legacy_table: old_widgets

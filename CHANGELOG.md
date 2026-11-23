@@ -2,6 +2,12 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.7 (2026-11-22)
+- spec/app: a resource may declare `catalog: {<relation>: {field, map, default}}` (platform-empire SPEC-002, relations `in-domain` and `serves-value`). On create and on an update that changes `field`, the write adds an outbox set event `<cell>.<resource>.linked` with `mode: replace`, the full `targets` list (`empire:platform:<kind>:<slug>` short form; a null or unmapped value uses `default`, or an empty set without one) and `set_version` = the row's version. Deleting emits no set event: the graph retracts a deleted subject's edges. Needs `graph:`. Without `catalog` nothing changes.
+- contract: the created/deleted order check looks at lifecycle events only, since a set event shares the created event's transaction time (cells without the relay's `seq` column keep working).
+- The mapped field must be `text` or `enum` with string map keys; `serves-value` is accepted only on `goals:goal`, `projects:project` and `habits:habit` (the graph's subjects); a set event follows every change of the stored value. Codex review.
+- Red: tests/kit/test_cellkit_catalog.py.
+
 ## 1.1.6 (2026-11-13)
 - app: a timestamp range default with more than 6 fractional-second digits is left to the database, because PostgreSQL rounds it while Python truncates it. Codex review of 1.1.5. Red: b40b609.
 

@@ -139,8 +139,10 @@ def test_lifecycle(client, owner, harness, resource):
             f"SELECT type FROM {cell.schema}.outbox WHERE subject = %s ORDER BY occurred_at",
             (f"empire:{cell.name}:{r.name}:{record['id']}",),
         )
-        assert types[0][0] == f"{cell.name}.{r.name}.created"
-        assert types[-1][0] == f"{cell.name}.{r.name}.deleted"
+        # catalog set events (.linked) share the created event's transaction time; order lifecycle events only
+        lifecycle = [t for (t,) in types if not t.endswith(".linked")]
+        assert lifecycle[0] == f"{cell.name}.{r.name}.created"
+        assert lifecycle[-1] == f"{cell.name}.{r.name}.deleted"
 
 
 def test_executions_are_bound_to_the_record(client, owner, harness, platform, resource):
