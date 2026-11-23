@@ -312,9 +312,11 @@ def test_a_broken_producer_setup_never_fails_the_write(
     assert record["id"] > 0
 
 
-def _insert_event(harness, ws, subject, version, ago, verb="updated", set_event=False):
+def _insert_event(
+    harness, ws, subject, version, ago, verb="updated", set_event=False, extra=None
+):
     r = harness.cell.resources[0]
-    payload = {"version": version, "deleted": verb == "deleted"}
+    payload = {"version": version, "deleted": verb == "deleted"} | (extra or {})
     if set_event:  # a platform-empire SPEC-002 catalog set event
         payload |= {
             "relation": "in-domain",
@@ -503,14 +505,31 @@ def test_a_set_event_left_in_backoff_does_not_hold_back_its_record(harness):
     assert left == 0
 
 
-def test_a_linked_event_that_is_not_a_set_event_is_still_relayed(harness):
-    """Only catalog set events (mode: replace + relation) stay out of Kafka; a plain .linked goes out."""
-    from cellkit.relay import relay_once
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {
+            "relation": "related-to",
+            "target_ref": "empire:tasks:task:1",
+        },  # single link, no mode
+        {
+            "relation": "related-to",
+            "mode": "replace",
+            "targets": [],
+        },  # not a catalog relation
+    ],
+)
+def test_a_linked_event_that_is_not_a_set_event_is_still_relayed(harness, extra):
+    """Only catalog set events (mode: replace + a catalog relation) stay out of Kafka."""
+    from cellkit.relay import oldest_unsent_seconds, relay_once
 
     _drain(harness)
     r = harness.cell.resources[0]
     ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999995"
-    _insert_event(harness, ws, subject, 3, "1 minute", "linked")
+    _insert_event(harness, ws, subject, 3, "1 minute", "linked", extra=extra)
+    with _publisher_conn(harness) as conn:
+        assert oldest_unsent_seconds(conn, harness.cell) >= 60  # counted as unsent
     fake = FakePublisher()
     with _publisher_conn(harness) as conn:
         relay_once(conn, harness.cell, fake)
