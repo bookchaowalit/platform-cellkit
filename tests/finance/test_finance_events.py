@@ -6,6 +6,7 @@ import json
 import os
 import re
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -313,7 +314,15 @@ def test_a_broken_producer_setup_never_fails_the_write(
 
 
 def _insert_event(
-    harness, ws, subject, version, ago, verb="updated", set_event=False, extra=None
+    harness,
+    ws,
+    subject,
+    version,
+    ago,
+    verb="updated",
+    set_event=False,
+    extra=None,
+    published=True,
 ):
     r = harness.cell.resources[0]
     payload = {"version": version, "deleted": verb == "deleted"} | (extra or {})
@@ -325,15 +334,32 @@ def _insert_event(
             "set_version": version,
         }
     harness.superuser(
-        f"INSERT INTO {harness.cell.schema}.outbox (workspace_id, type, subject, payload, occurred_at)"
-        f" VALUES (%s, %s, %s, %s, now() - interval '{ago}') RETURNING 1",
+        f"INSERT INTO {harness.cell.schema}.outbox (workspace_id, type, subject, payload, occurred_at,"
+        f" published_at) VALUES (%s, %s, %s, %s, now() - interval '{ago}', %s) RETURNING 1",
         (
             str(ws),
             f"{harness.cell.name}.{r.name}.{verb}",
             subject,
             json.dumps(payload),
+            # a set event the graph publisher already sent (the relay marks only those)
+            datetime.now(UTC) if set_event and published else None,
         ),
     )
+
+
+def _unrelayed(harness, subject) -> int:
+    return harness.superuser(
+        f"SELECT count(*) FROM {harness.cell.schema}.outbox WHERE subject = %s AND relayed_at IS NULL",
+        (subject,),
+    )[0][0]
+
+
+@pytest.fixture
+def catalog_cell(monkeypatch):
+    """The finance fixtures declare no catalog; act as a cell that does (set events get marked)."""
+    import cellkit.relay
+
+    monkeypatch.setattr(cellkit.relay, "_has_catalog", lambda cell: True)
 
 
 def _sent_versions(fake, subject):
@@ -480,7 +506,9 @@ def test_a_catalog_set_event_is_never_relayed(harness):
     assert _sent_versions(fake, subject) == []
 
 
-def test_a_set_event_left_in_backoff_does_not_hold_back_its_record(harness):
+def test_a_set_event_left_in_backoff_does_not_hold_back_its_record(
+    harness, catalog_cell
+):
     """A .linked row an older relay left in backoff is marked done; the record's next event goes out."""
     from cellkit.relay import relay_once
 
@@ -536,7 +564,9 @@ def test_a_linked_event_that_is_not_a_set_event_is_still_relayed(harness, extra)
     assert _sent_versions(fake, subject) == [("linked", 3)]
 
 
-def test_a_set_event_locked_by_the_graph_publisher_does_not_stall_the_relay(harness):
+def test_a_set_event_locked_by_the_graph_publisher_does_not_stall_the_relay(
+    harness, catalog_cell
+):
     """The graph publisher holds row locks while it calls the graph; the relay skips those rows."""
     from cellkit.relay import relay_once
 
@@ -573,3 +603,77 @@ def test_a_set_event_locked_by_the_graph_publisher_does_not_stall_the_relay(harn
         (linked,),
     )
     assert left == 0
+
+
+def test_set_events_do_not_use_up_the_kafka_batch(harness, catalog_cell):
+    """Set events ahead of a sendable row neither fill the batch nor stop the sweep."""
+    from cellkit.relay import relay_once
+
+    _drain(harness)
+    r = harness.cell.resources[0]
+    ws = uuid.uuid4()
+    for n in range(3):
+        _insert_event(
+            harness,
+            ws,
+            f"empire:{harness.cell.name}:{r.name}:99998{n}",
+            1,
+            "2 minutes",
+            "linked",
+            set_event=True,
+        )
+    sendable = f"empire:{harness.cell.name}:{r.name}:999979"
+    _insert_event(harness, ws, sendable, 1, "1 minute", "created")
+    fake = FakePublisher()
+    with _publisher_conn(harness) as conn:
+        result = relay_once(conn, harness.cell, fake, batch_size=2)
+    assert result.sent == 1
+    assert _sent_versions(fake, sendable) == [("created", 1)]
+
+
+def test_a_set_event_the_graph_has_not_received_is_left_to_the_graph_publisher(
+    harness, catalog_cell
+):
+    """The relay never takes (locks or marks) a set event the graph publisher still has to send."""
+    from cellkit.relay import oldest_unsent_seconds, relay_once
+
+    _drain(harness)
+    r = harness.cell.resources[0]
+    ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999978"
+    _insert_event(
+        harness, ws, subject, 1, "1 day", "linked", set_event=True, published=False
+    )
+    _insert_event(harness, ws, subject, 2, "1 minute", "updated")
+    fake = FakePublisher()
+    with _publisher_conn(harness) as conn:
+        relay_once(conn, harness.cell, fake)
+        assert oldest_unsent_seconds(conn, harness.cell) < 3600  # not counted as unsent
+    assert _sent_versions(fake, subject) == [
+        ("updated", 2)
+    ]  # and it holds nothing back
+    assert _unrelayed(harness, subject) == 1  # still the graph publisher's
+
+
+def test_marking_set_events_counts_as_progress(harness, catalog_cell, monkeypatch):
+    """A batch that only marks set events reports them, so the sweep keeps going."""
+    import cellkit.relay
+    from cellkit.relay import relay_once
+
+    _drain(harness)
+    monkeypatch.setattr(cellkit.relay, "SET_EVENT_MARK_LIMIT", 2)
+    r = harness.cell.resources[0]
+    ws = uuid.uuid4()
+    for n in range(3):
+        _insert_event(
+            harness,
+            ws,
+            f"empire:{harness.cell.name}:{r.name}:99997{n}",
+            1,
+            "1 minute",
+            "linked",
+            set_event=True,
+        )
+    with _publisher_conn(harness) as conn:
+        first = relay_once(conn, harness.cell, FakePublisher())
+        second = relay_once(conn, harness.cell, FakePublisher())
+    assert (first.sent, first.marked, second.marked) == (0, 2, 1)
