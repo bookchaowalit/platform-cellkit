@@ -4,7 +4,8 @@ Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pypr
 
 ## 1.1.10 (2026-11-23)
 - relay: set events no longer share the Kafka batch. The batch select leaves them out again with its own `LIMIT`, so set events ahead of sendable rows neither fill a batch nor end the sweep. A separate step marks at most 100 per batch as relayed (`SKIP LOCKED`). It runs only in a cell that declares `catalog` and only on rows the graph publisher has already sent, so the relay never locks a set event the graph still has to receive. A set event still never holds back a record and is never counted as unsent. Codex review of 1.1.9.
-- Red: tests/finance/test_finance_events.py (set events ahead of the batch; a set event the graph has not received).
+- relay: `RelayResult.marked` counts the set events a batch marked, and `<cell>-relay` keeps sweeping while batches only mark (it stopped after 100). The marking scan walks the unrelayed index, so set events still waiting for the graph are walked again each batch. No cell runs a relay and declares `catalog` today (the catalog cells' outboxes have no relay columns); before one does, it needs a partial index for those rows.
+- Red: tests/finance/test_finance_events.py (set events ahead of the batch; a set event the graph has not received). Progress test for `marked`.
 
 ## 1.1.9 (2026-11-23)
 - relay: a set event is what the graph treats as one: a `.linked` type, `mode: replace` and a catalog relation (`in-domain`, `serves-value`, `measured-by`, `defined-by`). The test is never NULL, so any other `.linked` event (a single link without `mode`, or another relation) is relayed and counted as before.

@@ -53,6 +53,7 @@ class RelayResult:
     sent: int
     failed: int
     skipped: bool = False
+    marked: int = 0  # SPEC-002 set events marked relayed (not sent to Kafka)
 
 
 def lock_key(cell: Cell) -> str:
@@ -126,16 +127,20 @@ def _has_catalog(cell: Cell) -> bool:
     return any(r.catalog for r in cell.resources)
 
 
-def _mark_set_events(cur: psycopg.Cursor[Any], cell: Cell) -> None:
+def _mark_set_events(cur: psycopg.Cursor[Any], cell: Cell) -> int:
     """Mark SPEC-002 set events relayed (they never go to Kafka), so they leave the unrelayed index.
 
     Only in a cell that declares ``catalog`` (no other cell writes set events, so no other cell pays
     for the scan), only rows the graph publisher already sent (it locks unsent ones while it calls
     the graph, and the relay must not take them from it), at most SET_EVENT_MARK_LIMIT per batch
     with SKIP LOCKED, and with its own quota, so set events never crowd out the Kafka batch.
+
+    The scan walks the unrelayed index, so set events still waiting for the graph are walked again
+    each batch. No cell runs a relay and declares catalog today (the catalog cells' outboxes have
+    no relay columns). Before one does, give it a partial index for these rows.
     """
     if not _has_catalog(cell):
-        return
+        return 0
     schema = cell.schema
     cur.execute(
         f"UPDATE {schema}.outbox SET relayed_at = now(), relay_next_at = NULL WHERE id IN"
@@ -143,6 +148,7 @@ def _mark_set_events(cur: psycopg.Cursor[Any], cell: Cell) -> None:
         f" AND {SET_EVENT.format(t='o')} ORDER BY o.seq LIMIT %s FOR UPDATE SKIP LOCKED)",
         (SET_EVENT_MARK_LIMIT,),
     )
+    return cur.rowcount
 
 
 def relay_once(
@@ -201,7 +207,7 @@ def _batch(
         # A lost secret arrives as "" from GitHub Actions; under enforce an unsigned event would be
         # dropped by every consumer, so send nothing and fail instead.
         raise signing.BadKey("missing signing key")
-    _mark_set_events(cur, cell)
+    marked = _mark_set_events(cur, cell)
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
     blocked: set[tuple[str, str]] = set()
     deadline = time.monotonic() + time_budget
@@ -232,7 +238,7 @@ def _batch(
             (row["id"],),
         )
         sent += 1
-    return RelayResult(sent, failed)
+    return RelayResult(sent, failed, marked=marked)
 
 
 def oldest_unsent_seconds(conn: psycopg.Connection[Any], cell: Cell) -> float:
@@ -326,7 +332,8 @@ def main(argv: list[str] | None = None) -> int:
                 totals["failed"] += result.failed
                 totals["skipped"] = result.skipped
                 # A batch that failed entirely still moved on: failed rows wait out their backoff.
-                if result.skipped or result.sent + result.failed == 0:
+                # a batch that only marked set events also moved on
+                if result.skipped or result.sent + result.failed + result.marked == 0:
                     break
             backlog = oldest_unsent_seconds(conn, cell)
             refs_read = _catch_up_references(conn, cell)

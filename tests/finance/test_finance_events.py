@@ -652,3 +652,28 @@ def test_a_set_event_the_graph_has_not_received_is_left_to_the_graph_publisher(
         ("updated", 2)
     ]  # and it holds nothing back
     assert _unrelayed(harness, subject) == 1  # still the graph publisher's
+
+
+def test_marking_set_events_counts_as_progress(harness, catalog_cell, monkeypatch):
+    """A batch that only marks set events reports them, so the sweep keeps going."""
+    import cellkit.relay
+    from cellkit.relay import relay_once
+
+    _drain(harness)
+    monkeypatch.setattr(cellkit.relay, "SET_EVENT_MARK_LIMIT", 2)
+    r = harness.cell.resources[0]
+    ws = uuid.uuid4()
+    for n in range(3):
+        _insert_event(
+            harness,
+            ws,
+            f"empire:{harness.cell.name}:{r.name}:99997{n}",
+            1,
+            "1 minute",
+            "linked",
+            set_event=True,
+        )
+    with _publisher_conn(harness) as conn:
+        first = relay_once(conn, harness.cell, FakePublisher())
+        second = relay_once(conn, harness.cell, FakePublisher())
+    assert (first.sent, first.marked, second.marked) == (0, 2, 1)
