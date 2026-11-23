@@ -164,6 +164,12 @@ def _batch(
         # A lost secret arrives as "" from GitHub Actions; under enforce an unsigned event would be
         # dropped by every consumer, so send nothing and fail instead.
         raise signing.BadKey("missing signing key")
+    # SPEC-002 set events never leave for Kafka: mark them done, so they neither stay in the unrelayed
+    # index nor (left in backoff by an older relay) hold back a later event of the same record
+    cur.execute(
+        f"UPDATE {schema}.outbox o SET relayed_at = now(), relay_next_at = NULL"
+        f" WHERE o.relayed_at IS NULL AND NOT {NOT_LINKED.format(t='o')}"
+    )
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
     blocked: set[tuple[str, str]] = set()
     deadline = time.monotonic() + time_budget

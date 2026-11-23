@@ -3,8 +3,8 @@
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
 ## 1.1.8 (2026-11-23)
-- relay: a catalog set event (`<cell>.<resource>.linked`) is never relayed to Kafka (SPEC-005), which carries `graph:` fields only, and it does not count as unsent; the graph publisher still sends it. Cells without the relay columns are unaffected. Codex review of 1.1.7.
-- Red: tests/finance/test_finance_events.py::test_a_catalog_set_event_is_never_relayed.
+- relay: a catalog set event (`<cell>.<resource>.linked`) is never relayed to Kafka (SPEC-005), which carries `graph:` fields only, and it does not count as unsent: each relay batch marks such rows relayed (so they leave the unrelayed index, and one an older relay left in backoff no longer holds back its record); the graph publisher still sends it. Cells without the relay columns are unaffected. Codex review of 1.1.7.
+- Red: tests/finance/test_finance_events.py (never relayed; left in backoff).
 
 ## 1.1.7 (2026-11-22)
 - spec/app: a resource may declare `catalog: {<relation>: {field, map, default}}` (platform-empire SPEC-002, relations `in-domain` and `serves-value`). On create and on an update that changes `field`, the write adds an outbox set event `<cell>.<resource>.linked` with `mode: replace`, the full `targets` list (`empire:platform:<kind>:<slug>` short form; a null or unmapped value uses `default`, or an empty set without one) and `set_version` = the row's version. Deleting emits no set event: the graph retracts a deleted subject's edges. Needs `graph:`. Without `catalog` nothing changes.
