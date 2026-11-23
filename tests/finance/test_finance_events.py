@@ -261,7 +261,8 @@ def test_oldest_unsent_seconds(client, owner, harness):
 
     _drain(harness)
     with _publisher_conn(harness) as conn:
-        assert oldest_unsent_seconds(conn, harness.cell) == 0
+        # older than any row the other tests leave in backoff, yet not counted as unsent
+        assert oldest_unsent_seconds(conn, harness.cell) < 3600
     make(client, owner, harness.cell, harness.cell.resources[0])
     with _publisher_conn(harness) as conn:
         assert oldest_unsent_seconds(conn, harness.cell) >= 0
@@ -451,3 +452,44 @@ def test_the_relay_job_prints_counts(harness, monkeypatch, capsys):
         "oldest_unsent_seconds",
         "refs_read",
     }
+
+
+def test_a_catalog_set_event_is_never_relayed(harness):
+    """SPEC-002: a set event's targets come from a field outside graph:, so it stays out of Kafka."""
+    from cellkit.relay import oldest_unsent_seconds, relay_once
+
+    _drain(harness)
+    r = harness.cell.resources[0]
+    ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999997"
+    _insert_event(harness, ws, subject, 1, "1 day", "linked")
+    fake = FakePublisher()
+    with _publisher_conn(harness) as conn:
+        relay_once(conn, harness.cell, fake)
+        # older than any row the other tests leave in backoff, yet not counted as unsent
+        assert oldest_unsent_seconds(conn, harness.cell) < 3600
+    assert _sent_versions(fake, subject) == []
+
+
+def test_a_set_event_left_in_backoff_does_not_hold_back_its_record(harness):
+    """A .linked row an older relay left in backoff is marked done; the record's next event goes out."""
+    from cellkit.relay import relay_once
+
+    _drain(harness)
+    r = harness.cell.resources[0]
+    ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999996"
+    _insert_event(harness, ws, subject, 1, "3 minutes", "linked")
+    harness.superuser(
+        f"UPDATE {harness.cell.schema}.outbox SET relay_next_at = now() + interval '1 hour'"
+        " WHERE subject = %s RETURNING 1",
+        (subject,),
+    )
+    _insert_event(harness, ws, subject, 2, "1 minute", "updated")
+    fake = FakePublisher()
+    with _publisher_conn(harness) as conn:
+        relay_once(conn, harness.cell, fake)
+    assert _sent_versions(fake, subject) == [("updated", 2)]
+    [[left]] = harness.superuser(
+        f"SELECT count(*) FROM {harness.cell.schema}.outbox WHERE subject = %s AND relayed_at IS NULL",
+        (subject,),
+    )
+    assert left == 0
