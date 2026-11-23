@@ -312,8 +312,18 @@ def test_a_broken_producer_setup_never_fails_the_write(
     assert record["id"] > 0
 
 
-def _insert_event(harness, ws, subject, version, ago, verb="updated"):
+def _insert_event(
+    harness, ws, subject, version, ago, verb="updated", set_event=False, extra=None
+):
     r = harness.cell.resources[0]
+    payload = {"version": version, "deleted": verb == "deleted"} | (extra or {})
+    if set_event:  # a platform-empire SPEC-002 catalog set event
+        payload |= {
+            "relation": "in-domain",
+            "mode": "replace",
+            "targets": [],
+            "set_version": version,
+        }
     harness.superuser(
         f"INSERT INTO {harness.cell.schema}.outbox (workspace_id, type, subject, payload, occurred_at)"
         f" VALUES (%s, %s, %s, %s, now() - interval '{ago}') RETURNING 1",
@@ -321,7 +331,7 @@ def _insert_event(harness, ws, subject, version, ago, verb="updated"):
             str(ws),
             f"{harness.cell.name}.{r.name}.{verb}",
             subject,
-            json.dumps({"version": version, "deleted": verb == "deleted"}),
+            json.dumps(payload),
         ),
     )
 
@@ -461,7 +471,7 @@ def test_a_catalog_set_event_is_never_relayed(harness):
     _drain(harness)
     r = harness.cell.resources[0]
     ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999997"
-    _insert_event(harness, ws, subject, 1, "1 day", "linked")
+    _insert_event(harness, ws, subject, 1, "1 day", "linked", set_event=True)
     fake = FakePublisher()
     with _publisher_conn(harness) as conn:
         relay_once(conn, harness.cell, fake)
@@ -477,7 +487,7 @@ def test_a_set_event_left_in_backoff_does_not_hold_back_its_record(harness):
     _drain(harness)
     r = harness.cell.resources[0]
     ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999996"
-    _insert_event(harness, ws, subject, 1, "3 minutes", "linked")
+    _insert_event(harness, ws, subject, 1, "3 minutes", "linked", set_event=True)
     harness.superuser(
         f"UPDATE {harness.cell.schema}.outbox SET relay_next_at = now() + interval '1 hour'"
         " WHERE subject = %s RETURNING 1",
@@ -491,5 +501,75 @@ def test_a_set_event_left_in_backoff_does_not_hold_back_its_record(harness):
     [[left]] = harness.superuser(
         f"SELECT count(*) FROM {harness.cell.schema}.outbox WHERE subject = %s AND relayed_at IS NULL",
         (subject,),
+    )
+    assert left == 0
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {},
+        {
+            "relation": "related-to",
+            "target_ref": "empire:tasks:task:1",
+        },  # single link, no mode
+        {
+            "relation": "related-to",
+            "mode": "replace",
+            "targets": [],
+        },  # not a catalog relation
+    ],
+)
+def test_a_linked_event_that_is_not_a_set_event_is_still_relayed(harness, extra):
+    """Only catalog set events (mode: replace + a catalog relation) stay out of Kafka."""
+    from cellkit.relay import oldest_unsent_seconds, relay_once
+
+    _drain(harness)
+    r = harness.cell.resources[0]
+    ws, subject = uuid.uuid4(), f"empire:{harness.cell.name}:{r.name}:999995"
+    _insert_event(harness, ws, subject, 3, "1 minute", "linked", extra=extra)
+    with _publisher_conn(harness) as conn:
+        assert oldest_unsent_seconds(conn, harness.cell) >= 60  # counted as unsent
+    fake = FakePublisher()
+    with _publisher_conn(harness) as conn:
+        relay_once(conn, harness.cell, fake)
+    assert _sent_versions(fake, subject) == [("linked", 3)]
+
+
+def test_a_set_event_locked_by_the_graph_publisher_does_not_stall_the_relay(harness):
+    """The graph publisher holds row locks while it calls the graph; the relay skips those rows."""
+    from cellkit.relay import relay_once
+
+    _drain(harness)
+    r = harness.cell.resources[0]
+    ws = uuid.uuid4()
+    linked = f"empire:{harness.cell.name}:{r.name}:999994"
+    other = f"empire:{harness.cell.name}:{r.name}:999993"
+    _insert_event(harness, ws, linked, 1, "2 minutes", "linked", set_event=True)
+    _insert_event(harness, ws, linked, 2, "1 minute", "updated")
+    _insert_event(harness, ws, other, 1, "1 minute", "created")
+    fake = FakePublisher()
+    with (
+        _publisher_conn(harness) as holder,
+        _publisher_conn(harness) as conn,
+        holder.transaction(),
+    ):
+        holder.execute(
+            f"SELECT id FROM {harness.cell.schema}.outbox WHERE subject = %s"
+            " AND right(type, 7) = '.linked' FOR UPDATE",
+            (linked,),
+        )
+        conn.execute(
+            "SET statement_timeout = '5s'"
+        )  # a wait on the lock fails instead of hanging
+        relay_once(conn, harness.cell, fake)
+    assert _sent_versions(fake, other) == [("created", 1)]
+    assert _sent_versions(fake, linked) == [("updated", 2)]
+    # the set event is marked by a later batch, once its lock is gone
+    with _publisher_conn(harness) as conn:
+        relay_once(conn, harness.cell, FakePublisher())
+    [[left]] = harness.superuser(
+        f"SELECT count(*) FROM {harness.cell.schema}.outbox WHERE subject = %s AND relayed_at IS NULL",
+        (linked,),
     )
     assert left == 0

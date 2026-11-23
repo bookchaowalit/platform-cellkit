@@ -2,6 +2,11 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.9 (2026-11-23)
+- relay: a set event is what the graph treats as one: a `.linked` type, `mode: replace` and a catalog relation (`in-domain`, `serves-value`, `measured-by`, `defined-by`). The test is never NULL, so any other `.linked` event (a single link without `mode`, or another relation) is relayed and counted as before.
+- relay: set events no longer get a cleanup query of their own, which scanned every unrelayed row in each batch. The batch select takes them in `seq` order (also out of an old backoff), marks them relayed with `SKIP LOCKED` instead of sending them, and never lets them hold back a record. So a row the graph publisher holds while it calls the graph no longer stalls the relay. Codex review of 1.1.8.
+- Red: tests/finance/test_finance_events.py (other `.linked` shapes relayed; locked set event).
+
 ## 1.1.8 (2026-11-23)
 - relay: a catalog set event (`<cell>.<resource>.linked`) is never relayed to Kafka (SPEC-005), which carries `graph:` fields only, and it does not count as unsent: each relay batch marks such rows relayed (so they leave the unrelayed index, and one an older relay left in backoff no longer holds back its record); the graph publisher still sends it. Cells without the relay columns are unaffected. Codex review of 1.1.7.
 - Red: tests/finance/test_finance_events.py (never relayed; left in backoff).

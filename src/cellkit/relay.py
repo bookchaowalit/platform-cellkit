@@ -86,8 +86,17 @@ def envelope(cell: Cell, row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-# SPEC-002 set events stay out of Kafka (no LIKE: the query also carries %s parameters)
-NOT_LINKED = "right({t}.type, 7) <> '.linked'"
+# platform-empire SPEC-002 catalog set events stay out of Kafka. The test mirrors the graph's own
+# (graph.ingest_event_v1): a `.linked` type, `mode: replace` and a catalog relation. It is never NULL,
+# so any other `.linked` event (no mode, or another relation) is relayed as before. No LIKE: the
+# queries carry %s parameters.
+GRAPH_CATALOG_RELATIONS = ("in-domain", "serves-value", "measured-by", "defined-by")
+SET_EVENT = (
+    "(right({t}.type, 7) = '.linked' AND coalesce({t}.payload->>'mode' = 'replace', false)"
+    " AND coalesce({t}.payload->>'relation' IN ("
+    + ", ".join(f"'{r}'" for r in GRAPH_CATALOG_RELATIONS)
+    + "), false))"
+)
 
 
 def _select(schema: str) -> str:
@@ -95,15 +104,16 @@ def _select(schema: str) -> str:
     # A record's events go out in insert order (seq): the row lock serialises writes to one record,
     # so a later insert is a later commit, even when its transaction started first (occurred_at) or
     # it re-created a deleted legacy id (its version starts again at 1). While an earlier event of
-    # the same record of the same workspace waits out its backoff, later ones wait too.
+    # the same record of the same workspace waits out its backoff, later ones wait too. Set events
+    # come in the same order and are marked, not sent (see _batch); they never hold back a record.
     return (
         f"SELECT o.id, o.workspace_id, o.type, o.subject, o.execution_id, o.payload, o.occurred_at,"
-        f" o.correlation_id, o.seq FROM {table} o"
-        " WHERE o.relayed_at IS NULL AND (o.relay_next_at IS NULL OR o.relay_next_at <= now())"
-        f" AND {NOT_LINKED.format(t='o')}"
+        f" o.correlation_id, o.seq, {SET_EVENT.format(t='o')} AS set_event FROM {table} o"
+        " WHERE o.relayed_at IS NULL AND (o.relay_next_at IS NULL OR o.relay_next_at <= now()"
+        f" OR {SET_EVENT.format(t='o')})"  # one an older relay left in backoff is marked now
         f" AND NOT EXISTS (SELECT 1 FROM {table} f WHERE f.workspace_id = o.workspace_id"
         " AND f.subject = o.subject AND f.relayed_at IS NULL AND f.relay_next_at > now()"
-        " AND f.seq < o.seq)"
+        f" AND f.seq < o.seq AND NOT {SET_EVENT.format(t='f')})"
         " ORDER BY o.seq LIMIT %s"
     )
 
@@ -164,16 +174,22 @@ def _batch(
         # A lost secret arrives as "" from GitHub Actions; under enforce an unsigned event would be
         # dropped by every consumer, so send nothing and fail instead.
         raise signing.BadKey("missing signing key")
-    # SPEC-002 set events never leave for Kafka: mark them done, so they neither stay in the unrelayed
-    # index nor (left in backoff by an older relay) hold back a later event of the same record
-    cur.execute(
-        f"UPDATE {schema}.outbox o SET relayed_at = now(), relay_next_at = NULL"
-        f" WHERE o.relayed_at IS NULL AND NOT {NOT_LINKED.format(t='o')}"
-    )
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
+    # SPEC-002 set events never leave for Kafka: mark the batch's ones done, so they leave the
+    # unrelayed index. SKIP LOCKED: the graph publisher holds its rows' locks while it calls the
+    # graph, and the relay (holding the relay lock) must not wait; a skipped one waits for a later batch.
+    linked = [row["id"] for row in rows if row["set_event"]]
+    if linked:
+        cur.execute(
+            f"UPDATE {schema}.outbox SET relayed_at = now(), relay_next_at = NULL WHERE id IN"
+            f" (SELECT id FROM {schema}.outbox WHERE id = ANY(%s) FOR UPDATE SKIP LOCKED)",
+            (linked,),
+        )
     blocked: set[tuple[str, str]] = set()
     deadline = time.monotonic() + time_budget
     for row in rows:
+        if row["set_event"]:
+            continue
         if time.monotonic() >= deadline:
             break  # the rest wait for the next batch
         record = (str(row["workspace_id"]), str(row["subject"]))
@@ -206,7 +222,7 @@ def _batch(
 def oldest_unsent_seconds(conn: psycopg.Connection[Any], cell: Cell) -> float:
     row = conn.execute(
         "SELECT coalesce(extract(epoch FROM now() - min(occurred_at)), 0)"
-        f" FROM {cell.schema}.outbox o WHERE o.relayed_at IS NULL AND {NOT_LINKED.format(t='o')}"
+        f" FROM {cell.schema}.outbox o WHERE o.relayed_at IS NULL AND NOT {SET_EVENT.format(t='o')}"
     ).fetchone()
     conn.commit()
     return float(row[0]) if row else 0.0
