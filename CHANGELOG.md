@@ -2,6 +2,10 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.10 (2026-11-23)
+- relay: set events no longer share the Kafka batch. The batch select leaves them out again with its own `LIMIT`, so set events ahead of sendable rows neither fill a batch nor end the sweep. A separate step marks at most 100 per batch as relayed (`SKIP LOCKED`). It runs only in a cell that declares `catalog` and only on rows the graph publisher has already sent, so the relay never locks a set event the graph still has to receive. A set event still never holds back a record and is never counted as unsent. Codex review of 1.1.9.
+- Red: tests/finance/test_finance_events.py (set events ahead of the batch; a set event the graph has not received).
+
 ## 1.1.9 (2026-11-23)
 - relay: a set event is what the graph treats as one: a `.linked` type, `mode: replace` and a catalog relation (`in-domain`, `serves-value`, `measured-by`, `defined-by`). The test is never NULL, so any other `.linked` event (a single link without `mode`, or another relation) is relayed and counted as before.
 - relay: set events no longer get a cleanup query of their own, which scanned every unrelayed row in each batch. The batch select takes them in `seq` order (also out of an old backoff), marks them relayed with `SKIP LOCKED` instead of sending them, and never lets them hold back a record. So a row the graph publisher holds while it calls the graph no longer stalls the relay. Codex review of 1.1.8.

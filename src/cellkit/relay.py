@@ -99,22 +99,49 @@ SET_EVENT = (
 )
 
 
+# how many set events one batch marks done (separate from the Kafka batch's own quota)
+SET_EVENT_MARK_LIMIT = 100
+
+
 def _select(schema: str) -> str:
     table = f"{schema}.outbox"
     # A record's events go out in insert order (seq): the row lock serialises writes to one record,
     # so a later insert is a later commit, even when its transaction started first (occurred_at) or
     # it re-created a deleted legacy id (its version starts again at 1). While an earlier event of
     # the same record of the same workspace waits out its backoff, later ones wait too. Set events
-    # come in the same order and are marked, not sent (see _batch); they never hold back a record.
+    # are not sent (see _mark_set_events) and never hold back a record.
     return (
         f"SELECT o.id, o.workspace_id, o.type, o.subject, o.execution_id, o.payload, o.occurred_at,"
-        f" o.correlation_id, o.seq, {SET_EVENT.format(t='o')} AS set_event FROM {table} o"
-        " WHERE o.relayed_at IS NULL AND (o.relay_next_at IS NULL OR o.relay_next_at <= now()"
-        f" OR {SET_EVENT.format(t='o')})"  # one an older relay left in backoff is marked now
+        f" o.correlation_id, o.seq FROM {table} o"
+        " WHERE o.relayed_at IS NULL AND (o.relay_next_at IS NULL OR o.relay_next_at <= now())"
+        f" AND NOT {SET_EVENT.format(t='o')}"
         f" AND NOT EXISTS (SELECT 1 FROM {table} f WHERE f.workspace_id = o.workspace_id"
         " AND f.subject = o.subject AND f.relayed_at IS NULL AND f.relay_next_at > now()"
         f" AND f.seq < o.seq AND NOT {SET_EVENT.format(t='f')})"
         " ORDER BY o.seq LIMIT %s"
+    )
+
+
+def _has_catalog(cell: Cell) -> bool:
+    return any(r.catalog for r in cell.resources)
+
+
+def _mark_set_events(cur: psycopg.Cursor[Any], cell: Cell) -> None:
+    """Mark SPEC-002 set events relayed (they never go to Kafka), so they leave the unrelayed index.
+
+    Only in a cell that declares ``catalog`` (no other cell writes set events, so no other cell pays
+    for the scan), only rows the graph publisher already sent (it locks unsent ones while it calls
+    the graph, and the relay must not take them from it), at most SET_EVENT_MARK_LIMIT per batch
+    with SKIP LOCKED, and with its own quota, so set events never crowd out the Kafka batch.
+    """
+    if not _has_catalog(cell):
+        return
+    schema = cell.schema
+    cur.execute(
+        f"UPDATE {schema}.outbox SET relayed_at = now(), relay_next_at = NULL WHERE id IN"
+        f" (SELECT o.id FROM {schema}.outbox o WHERE o.relayed_at IS NULL AND o.published_at IS NOT NULL"
+        f" AND {SET_EVENT.format(t='o')} ORDER BY o.seq LIMIT %s FOR UPDATE SKIP LOCKED)",
+        (SET_EVENT_MARK_LIMIT,),
     )
 
 
@@ -174,22 +201,11 @@ def _batch(
         # A lost secret arrives as "" from GitHub Actions; under enforce an unsigned event would be
         # dropped by every consumer, so send nothing and fail instead.
         raise signing.BadKey("missing signing key")
+    _mark_set_events(cur, cell)
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
-    # SPEC-002 set events never leave for Kafka: mark the batch's ones done, so they leave the
-    # unrelayed index. SKIP LOCKED: the graph publisher holds its rows' locks while it calls the
-    # graph, and the relay (holding the relay lock) must not wait; a skipped one waits for a later batch.
-    linked = [row["id"] for row in rows if row["set_event"]]
-    if linked:
-        cur.execute(
-            f"UPDATE {schema}.outbox SET relayed_at = now(), relay_next_at = NULL WHERE id IN"
-            f" (SELECT id FROM {schema}.outbox WHERE id = ANY(%s) FOR UPDATE SKIP LOCKED)",
-            (linked,),
-        )
     blocked: set[tuple[str, str]] = set()
     deadline = time.monotonic() + time_budget
     for row in rows:
-        if row["set_event"]:
-            continue
         if time.monotonic() >= deadline:
             break  # the rest wait for the next batch
         record = (str(row["workspace_id"]), str(row["subject"]))
