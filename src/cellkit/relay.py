@@ -86,8 +86,14 @@ def envelope(cell: Cell, row: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-# SPEC-002 set events stay out of Kafka (no LIKE: the query also carries %s parameters)
-NOT_LINKED = "right({t}.type, 7) <> '.linked'"
+# platform-empire SPEC-002 catalog set events (a `.linked` type with `mode: replace` and a `relation`)
+# stay out of Kafka; any other `.linked` event is relayed as before. No LIKE: the queries carry %s.
+SET_EVENT = (
+    "(right({t}.type, 7) = '.linked' AND {t}.payload->>'mode' = 'replace'"
+    " AND {t}.payload->>'relation' IS NOT NULL)"
+)
+# how many set events one batch marks done (the rest go in the next batch)
+SET_EVENT_MARK_LIMIT = 1000
 
 
 def _select(schema: str) -> str:
@@ -100,10 +106,10 @@ def _select(schema: str) -> str:
         f"SELECT o.id, o.workspace_id, o.type, o.subject, o.execution_id, o.payload, o.occurred_at,"
         f" o.correlation_id, o.seq FROM {table} o"
         " WHERE o.relayed_at IS NULL AND (o.relay_next_at IS NULL OR o.relay_next_at <= now())"
-        f" AND {NOT_LINKED.format(t='o')}"
+        f" AND NOT {SET_EVENT.format(t='o')}"
         f" AND NOT EXISTS (SELECT 1 FROM {table} f WHERE f.workspace_id = o.workspace_id"
         " AND f.subject = o.subject AND f.relayed_at IS NULL AND f.relay_next_at > now()"
-        " AND f.seq < o.seq)"
+        f" AND f.seq < o.seq AND NOT {SET_EVENT.format(t='f')})"
         " ORDER BY o.seq LIMIT %s"
     )
 
@@ -164,11 +170,15 @@ def _batch(
         # A lost secret arrives as "" from GitHub Actions; under enforce an unsigned event would be
         # dropped by every consumer, so send nothing and fail instead.
         raise signing.BadKey("missing signing key")
-    # SPEC-002 set events never leave for Kafka: mark them done, so they neither stay in the unrelayed
-    # index nor (left in backoff by an older relay) hold back a later event of the same record
+    # SPEC-002 set events never leave for Kafka: mark them done, so they do not stay in the unrelayed
+    # index. SKIP LOCKED: the graph publisher holds its rows' locks while it calls the graph, and the
+    # relay must not wait on them (it holds the relay lock). A set event never holds back a later
+    # event of its record (see _select), whether or not it is marked yet.
     cur.execute(
-        f"UPDATE {schema}.outbox o SET relayed_at = now(), relay_next_at = NULL"
-        f" WHERE o.relayed_at IS NULL AND NOT {NOT_LINKED.format(t='o')}"
+        f"UPDATE {schema}.outbox SET relayed_at = now(), relay_next_at = NULL WHERE id IN"
+        f" (SELECT o.id FROM {schema}.outbox o WHERE o.relayed_at IS NULL AND {SET_EVENT.format(t='o')}"
+        " LIMIT %s FOR UPDATE SKIP LOCKED)",
+        (SET_EVENT_MARK_LIMIT,),
     )
     rows = cur.execute(_select(schema), (batch_size,)).fetchall()
     blocked: set[tuple[str, str]] = set()
@@ -206,7 +216,7 @@ def _batch(
 def oldest_unsent_seconds(conn: psycopg.Connection[Any], cell: Cell) -> float:
     row = conn.execute(
         "SELECT coalesce(extract(epoch FROM now() - min(occurred_at)), 0)"
-        f" FROM {cell.schema}.outbox o WHERE o.relayed_at IS NULL AND {NOT_LINKED.format(t='o')}"
+        f" FROM {cell.schema}.outbox o WHERE o.relayed_at IS NULL AND NOT {SET_EVENT.format(t='o')}"
     ).fetchone()
     conn.commit()
     return float(row[0]) if row else 0.0
