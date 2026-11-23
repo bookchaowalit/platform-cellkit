@@ -2,6 +2,11 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.8 (2026-11-23)
+- app: a catalog set event is written already marked relayed, so the Kafka relay (SPEC-005), which carries `graph:` fields only, never sends targets derived from another field; the graph publisher still sends it. Codex review of 1.1.7.
+- app: on a record imported with `legacy_id`, `set_version` is one above every earlier event of the subject, so a re-created deleted legacy id (version back at 1) outranks the graph's tombstone instead of going stale. Codex review of 1.1.7.
+- Red: tests/kit/test_cellkit_catalog.py (relay and legacy re-create).
+
 ## 1.1.7 (2026-11-22)
 - spec/app: a resource may declare `catalog: {<relation>: {field, map, default}}` (platform-empire SPEC-002, relations `in-domain` and `serves-value`). On create and on an update that changes `field`, the write adds an outbox set event `<cell>.<resource>.linked` with `mode: replace`, the full `targets` list (`empire:platform:<kind>:<slug>` short form; a null or unmapped value uses `default`, or an empty set without one) and `set_version` = the row's version. Deleting emits no set event: the graph retracts a deleted subject's edges. Needs `graph:`. Without `catalog` nothing changes.
 - contract: the created/deleted order check looks at lifecycle events only, since a set event shares the created event's transaction time (cells without the relay's `seq` column keep working).

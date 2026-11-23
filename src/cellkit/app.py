@@ -728,20 +728,38 @@ def create_app(
                 ):
                     continue
                 wanted = link.targets(after.get(link.field))
+                subject = f"empire:{cell.name}:{r.name}:{current['id']}"
+                set_version = after.get("version", 1)
+                if after.get("legacy_id") is not None:
+                    # an import may re-create a deleted legacy id, whose version starts again at 1 while
+                    # the graph keeps the tombstone's version: order the set after every earlier event of
+                    # the subject (the row lock serialises writes to one record)
+                    prior = work.conn.execute(
+                        "SELECT coalesce(max(greatest((payload->>'version')::bigint,"
+                        f" (payload->>'set_version')::bigint)), 0) AS prior FROM {schema}.outbox"
+                        " WHERE workspace_id = %s AND subject = %s",
+                        (work.caller.workspace, subject),
+                    ).fetchone()
+                    set_version = max(
+                        set_version, int(prior["prior"]) + 1 if prior else 1
+                    )
+                # relayed_at is set at insert: the Kafka relay (SPEC-005) carries only graph: fields, and a
+                # set event carries targets derived from a field outside them; the graph publisher sends it
                 work.conn.execute(
                     f"INSERT INTO {schema}.outbox (workspace_id, type, subject, execution_id, classification,"
-                    " payload, correlation_id) VALUES (%s, %s, %s, %s, 'confidential', %s, %s)",
+                    " payload, correlation_id, relayed_at)"
+                    " VALUES (%s, %s, %s, %s, 'confidential', %s, %s, now())",
                     (
                         work.caller.workspace,
                         f"{cell.name}.{r.name}.linked",
-                        f"empire:{cell.name}:{r.name}:{current['id']}",
+                        subject,
                         work.marker,
                         json.dumps(
                             {
                                 "relation": link.relation,
                                 "mode": "replace",
                                 "targets": wanted,
-                                "set_version": after.get("version", 1),
+                                "set_version": set_version,
                                 "version": after.get("version", 1),
                             }
                         ),
