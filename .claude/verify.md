@@ -24,7 +24,8 @@ test suite against it (e.g. finance-transactions-api) before tagging.
 ## Never
 
 - `<cell>-db provision` (creates Neon projects).
-- `<cell>-db migrate` with `<CELL>_DB_MODE=hosted`.
+- `<cell>-db migrate`, `<cell>-publish` or the relay with `<CELL>_DB_MODE=hosted`: they read or change
+  the production database (publish reads the production outbox even when it posts to staging).
 - `<cell>-relay` with `<CELL>_RELAY_DATABASE_URL` or any `<CELL>_KAFKA_*` set to a real database or
   broker: it ignores `_DB_MODE` (`src/cellkit/relay.py`).
 - `<cell>-publish` with `EMPIRE_PLATFORM_URL` or `<CELL>_PUBLISHER_TOKEN` pointing at production: it
