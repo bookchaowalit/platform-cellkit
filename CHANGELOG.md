@@ -2,6 +2,10 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.11 (2026-11-26)
+- app: an import (`legacy_id`) reuses the old id, so a legacy id imported again after a delete names the same graph subject, whose tombstone holds the deleted version (the row's version + 1). The graph keeps the highest version per subject, so the new row at version 1 was `stale`: the node stayed deleted and its SPEC-002 `in-domain` set event was dropped (an edit only revived the node, without its set). An import of a resource with `graph:` now starts at one above the highest version its outbox already sent for that subject, so the `.created` event revives the node and the set event lands. A first import still starts at 1. Codex review of the platform-empire SPEC-002 rollout (goals and time cells).
+- Red: tests/kit/test_cellkit_catalog.py (re-import after delete; first import at 1).
+
 ## 1.1.10 (2026-11-23)
 - relay: set events no longer share the Kafka batch. The batch select leaves them out again with its own `LIMIT`, so set events ahead of sendable rows neither fill a batch nor end the sweep. A separate step marks at most 100 per batch as relayed (`SKIP LOCKED`). It runs only in a cell that declares `catalog` and only on rows the graph publisher has already sent, so the relay never locks a set event the graph still has to receive. A set event still never holds back a record and is never counted as unsent. Codex review of 1.1.9.
 - relay: `RelayResult.marked` counts the set events a batch marked, and `<cell>-relay` keeps sweeping while batches only mark (it stopped after 100). The marking scan walks the unrelayed index, so set events still waiting for the graph are walked again each batch. No cell runs a relay and declares `catalog` today (the catalog cells' outboxes have no relay columns); before one does, it needs a partial index for those rows.

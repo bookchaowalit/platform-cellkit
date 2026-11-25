@@ -1116,6 +1116,19 @@ def create_app(
                     for name, value in stamps.items():
                         columns.append(name)
                         params.append(value)
+                    # A legacy id reused after a delete names the same graph subject, whose tombstone holds the
+                    # deleted version: start above every version this subject already sent, or the graph (and
+                    # SPEC-002 set events) would treat the re-import as stale and keep the subject deleted.
+                    if r.graph is not None:
+                        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- schema is a spec-validated identifier; values are bound as %s parameters
+                        sent_before = work.conn.execute(
+                            f"SELECT max((payload ->> 'version')::bigint) AS v FROM {schema}.outbox"
+                            " WHERE subject = %s",
+                            (f"empire:{cell.name}:{r.name}:{sent.legacy_id}",),
+                        ).fetchone()
+                        if sent_before is not None and sent_before["v"] is not None:
+                            columns.append("version")
+                            params.append(sent_before["v"] + 1)
                 record_id = sent.legacy_id if sent.legacy_id is not None else reserved
                 if record_id is not None:
                     columns.append("id")

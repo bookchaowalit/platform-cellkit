@@ -56,6 +56,48 @@ def test_catalog_set_events(client, owner, harness):
     assert len(set_events(harness, record["id"])) == 3
 
 
+def test_reimported_legacy_id_versions_above_its_tombstone(client, owner, harness):
+    """A legacy id reused after a delete starts above the versions it already sent.
+
+    The graph keeps the highest version per subject: the delete's tombstone (row version + 1) would make a
+    re-import at version 1 `stale`, so the node stayed deleted and its in-domain set was dropped.
+    """
+    legacy = 424242
+    body = {"title": "w-legacy", "category": "alpha", "legacy_id": legacy}
+    first = client.post("/v1/widgets", headers=owner, json=body)
+    assert first.status_code == 201, first.text
+    edited = client.patch(f"/v1/widgets/{legacy}", headers=owner, json={"quantity": 2})
+    assert edited.json()["version"] == 2
+    assert client.delete(f"/v1/widgets/{legacy}", headers=owner).status_code == 204
+    cell = harness.cell
+    [(tombstone,)] = harness.superuser(
+        f"SELECT (payload->>'version')::bigint FROM {cell.schema}.outbox"
+        " WHERE subject = %s AND type = %s",
+        (f"empire:{cell.name}:widget:{legacy}", f"{cell.name}.widget.deleted"),
+    )
+    assert tombstone == 3
+
+    again = client.post("/v1/widgets", headers=owner, json=body)
+    assert again.status_code == 201, again.text
+    record = again.json()
+    assert record["version"] == tombstone + 1
+    created = harness.superuser(
+        f"SELECT payload FROM {cell.schema}.outbox WHERE subject = %s AND type = %s"
+        " ORDER BY occurred_at DESC LIMIT 1",
+        (f"empire:{cell.name}:widget:{legacy}", f"{cell.name}.widget.created"),
+    )[0][0]
+    assert created["version"] == tombstone + 1
+    assert set_events(harness, str(legacy))[-1]["set_version"] == tombstone + 1
+
+
+def test_a_fresh_legacy_import_still_starts_at_version_one(client, owner):
+    made = client.post(
+        "/v1/widgets", headers=owner, json={"title": "w-legacy-2", "legacy_id": 434343}
+    )
+    assert made.status_code == 201, made.text
+    assert made.json()["version"] == 1
+
+
 def base(catalog, graph=("title",), cell="sample", resource_name="thing"):
     resource = {
         "fields": {
