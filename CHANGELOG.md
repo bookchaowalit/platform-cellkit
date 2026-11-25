@@ -2,7 +2,10 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
-## 1.1.11 (2026-11-26)
+## 1.1.12 (2026-11-26)
+- release: same code as the `v1.1.11` tag, whose release stopped because `__version__` still said 1.1.10 (no wheel was published for 1.1.11; pin 1.1.12).
+
+## 1.1.11 (2026-11-26, not released)
 - app: an import (`legacy_id`) reuses the old id, so a legacy id imported again after a delete names the same graph subject, whose tombstone holds the deleted version (the row's version + 1). The graph keeps the highest version per subject, so the new row at version 1 was `stale`: the node stayed deleted and its SPEC-002 `in-domain` set event was dropped (an edit only revived the node, without its set). An import of a resource with `graph:` now starts at one above the highest version its outbox already sent for that subject, so the `.created` event revives the node and the set event lands. A first import still starts at 1. Codex review of the platform-empire SPEC-002 rollout (goals and time cells).
 - Red: tests/kit/test_cellkit_catalog.py (re-import after delete; first import at 1).
 
