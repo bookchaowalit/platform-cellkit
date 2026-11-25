@@ -2,6 +2,11 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.1.13 (2026-11-26)
+- app: the re-import version (1.1.11) is now read after the INSERT. A concurrent delete of the same legacy id holds the primary key until it commits, so the INSERT waits and the next statement (READ COMMITTED) sees that delete's tombstone; reading before the INSERT could miss it and start the row too low (Codex review of 1.1.12). The row is then moved to one above the highest version its subject already sent.
+- The graph side of a re-import whose set event arrives before its `.created` is platform-empire migration 2012.
+- Red: tests/kit/test_cellkit_catalog.py (re-import waiting on an uncommitted delete: 2 on 1.1.12, 8 now).
+
 ## 1.1.12 (2026-11-26)
 - release: same code as the `v1.1.11` tag, whose release stopped because `__version__` still said 1.1.10 (no wheel was published for 1.1.11; pin 1.1.12).
 

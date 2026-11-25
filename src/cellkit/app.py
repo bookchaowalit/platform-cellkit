@@ -750,6 +750,33 @@ def create_app(
                 )
         return audit(r, verb, current["id"], before, after)
 
+    def above_tombstone(work: Work, r: Resource, row: dict[str, Any]) -> dict[str, Any]:
+        """A legacy id reused after a delete names the same graph subject, whose tombstone holds the deleted
+        version: move the new row above every version this subject already sent, or the graph (and SPEC-002 set
+        events) treats the re-import as stale and keeps the subject deleted.
+
+        Read after the INSERT: a concurrent delete of the same id holds the primary key until it commits, so
+        this statement (READ COMMITTED) already sees that delete's outbox row.
+        """
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- schema/table are spec-validated identifiers; values are bound as %s parameters
+        sent_before = work.conn.execute(
+            f"SELECT max((payload ->> 'version')::bigint) AS v FROM {schema}.outbox WHERE subject = %s",
+            (f"empire:{cell.name}:{r.name}:{row['id']}",),
+        ).fetchone()
+        if (
+            sent_before is None
+            or sent_before["v"] is None
+            or sent_before["v"] < row["version"]
+        ):
+            return row
+        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- schema/table are spec-validated identifiers; values are bound as %s parameters
+        moved = work.conn.execute(
+            f"UPDATE {schema}.{r.table} SET version = %s WHERE id = %s RETURNING {r.select}",
+            (sent_before["v"] + 1, row["id"]),
+        ).fetchone()
+        assert moved is not None  # the row was inserted in this transaction
+        return dict(moved)
+
     def publish_soon(background: BackgroundTasks, caller: Principal) -> None:
         token = publisher_token()
         if not token or not cell.graph:
@@ -1116,19 +1143,6 @@ def create_app(
                     for name, value in stamps.items():
                         columns.append(name)
                         params.append(value)
-                    # A legacy id reused after a delete names the same graph subject, whose tombstone holds the
-                    # deleted version: start above every version this subject already sent, or the graph (and
-                    # SPEC-002 set events) would treat the re-import as stale and keep the subject deleted.
-                    if r.graph is not None:
-                        # nosemgrep: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query -- schema is a spec-validated identifier; values are bound as %s parameters
-                        sent_before = work.conn.execute(
-                            f"SELECT max((payload ->> 'version')::bigint) AS v FROM {schema}.outbox"
-                            " WHERE subject = %s",
-                            (f"empire:{cell.name}:{r.name}:{sent.legacy_id}",),
-                        ).fetchone()
-                        if sent_before is not None and sent_before["v"] is not None:
-                            columns.append("version")
-                            params.append(sent_before["v"] + 1)
                 record_id = sent.legacy_id if sent.legacy_id is not None else reserved
                 if record_id is not None:
                     columns.append("id")
@@ -1139,6 +1153,8 @@ def create_app(
                     params,
                 ).fetchone()
                 assert row is not None  # INSERT ... RETURNING always returns the row
+                if importing and r.graph is not None:
+                    row = above_tombstone(work, r, row)
                 return Plan(
                     f"{cell.name}.{r.name}:write",
                     str(row["id"]),
