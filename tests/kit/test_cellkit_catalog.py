@@ -90,6 +90,46 @@ def test_reimported_legacy_id_versions_above_its_tombstone(client, owner, harnes
     assert set_events(harness, str(legacy))[-1]["set_version"] == tombstone + 1
 
 
+def test_a_reimport_waiting_on_an_uncommitted_delete_reads_its_tombstone(
+    client, owner, harness
+):
+    """The version is read after the INSERT, which waits for a concurrent delete of the same id to commit."""
+    import threading
+    import time
+
+    legacy = 454545
+    body = {"title": "w-legacy-3", "category": "alpha", "legacy_id": legacy}
+    assert client.post("/v1/widgets", headers=owner, json=body).status_code == 201
+    cell = harness.cell
+    subject = f"empire:{cell.name}:widget:{legacy}"
+    result: dict = {}
+    with harness.cluster.connect("postgres", cell.schema) as conn:
+        # a delete in flight: the row is gone and its tombstone queued, not committed yet
+        conn.execute(f"DELETE FROM {cell.schema}.widgets WHERE id = %s", (legacy,))
+        conn.execute(
+            f"INSERT INTO {cell.schema}.outbox (workspace_id, type, subject, payload)"
+            f" SELECT workspace_id, %s, %s, %s FROM {cell.schema}.outbox WHERE subject = %s LIMIT 1",
+            (
+                f"{cell.name}.widget.deleted",
+                subject,
+                '{"version": 7, "deleted": true}',
+                subject,
+            ),
+        )
+        worker = threading.Thread(
+            target=lambda: result.update(
+                response=client.post("/v1/widgets", headers=owner, json=body)
+            )
+        )
+        worker.start()
+        time.sleep(0.5)
+        assert worker.is_alive()  # the INSERT waits on the deleting transaction's key
+        conn.commit()
+    worker.join(10)
+    assert result["response"].status_code == 201, result["response"].text
+    assert result["response"].json()["version"] == 8
+
+
 def test_a_fresh_legacy_import_still_starts_at_version_one(client, owner):
     made = client.post(
         "/v1/widgets", headers=owner, json={"title": "w-legacy-2", "legacy_id": 434343}
