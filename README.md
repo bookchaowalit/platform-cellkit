@@ -49,6 +49,11 @@ from cellkit.contract import *
 Signed events (SPEC-002, `specs/002-signed-events`): `<CELL>_EVENT_SIGNING_KEY` on the producer;
 `<CELL>_EVENT_KEYS` and `<CELL>_EVENT_SIGNATURES=off|report|enforce` on consumers.
 
+Confirm before delete (SPEC-003, `specs/003-mcp-confirm`): every MCP `delete` tool, and an
+extension tool added with `ext.add(..., confirm=True)`, asks the person through MCP form
+elicitation before it calls the API. `EMPIRE_MCP_CONFIRM=ask` (default) skips the question for a
+client that cannot show a form, `require` refuses that client, `off` never asks.
+
 ## Changing the kit
 
 1. Spec first (`specs/NNN-<slug>/spec.md`, ADR-0004), red test, then the change.

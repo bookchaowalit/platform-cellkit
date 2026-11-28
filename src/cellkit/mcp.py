@@ -22,8 +22,15 @@ Configuration follows the other clients (ops-toolkit ``cell_store.py``, mcp-aggr
     EMPIRE_TOKEN_FILE=/path/x.jwt        a token file (mode 600), else the automation token
     EMPIRE_MCP_AUTOMATION=owner-mcp      EMPIRE_AUTOMATION_TOKEN_<NAME> or ~/.config/empire-platform/tokens/<name>.jwt
     EMPIRE_MCP_READONLY=1                register only list and get
+    EMPIRE_MCP_CONFIRM=ask|require|off   SPEC-003: ask the person before a delete (default ask)
 
     <cell>-mcp                           stdio server (see .mcp.json)
+
+SPEC-003: a delete tool (and an extension tool added with ``confirm=True``) asks the person
+through form elicitation after its arguments validate and before it calls the API; only an
+accept with ``confirm: true`` goes through. ``ask`` skips the question for a client that cannot
+show a form (the 1.1.x behaviour), ``require`` refuses it, ``off`` never asks, and any other
+value counts as ``require``.
 """
 
 from __future__ import annotations
@@ -40,11 +47,13 @@ import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 import httpx
-from mcp.server.mcpserver import MCPServer
+from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp_types import Tool as MCPTool
 from pydantic import (
     BaseModel,
@@ -111,6 +120,75 @@ class ToolFailed(ToolError):
 
 class ConfigError(RuntimeError):
     pass
+
+
+# --- SPEC-003: confirmation before a destructive call ---------------------------------------------
+
+
+class Confirm(BaseModel):
+    """The elicitation form: one box the person ticks."""
+
+    confirm: bool = PydanticField(
+        description="Tick to go ahead. Leave it unticked, decline or cancel to stop."
+    )
+
+
+ConfirmMode = Literal["ask", "require", "off"]
+
+
+def confirm_mode(environ: Any = None) -> ConfirmMode:
+    environ = os.environ if environ is None else environ
+    value = (environ.get("EMPIRE_MCP_CONFIRM") or "").strip().lower()
+    if value in ("", "ask"):
+        return "ask"
+    if value == "off":
+        return "off"
+    return "require"  # "require" and every unknown value: fail closed
+
+
+def can_ask(context: Any) -> bool:
+    """True when the client declared form elicitation (an empty elicitation object means form)."""
+    if context is None:
+        return False
+    try:
+        capabilities = context.client_capabilities
+    except (AssertionError, AttributeError, LookupError, ValueError):
+        return False  # no request context (a direct call_tool, as in tests)
+    elicitation = getattr(capabilities, "elicitation", None)
+    if elicitation is None:
+        return False
+    return elicitation.form is not None or elicitation.url is None
+
+
+# Set inside a confirm tool's body once the person said yes: an error before it means "not confirmed".
+confirmed: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "confirmed", default=False
+)
+
+
+def confirmation_resolver(
+    model: type[BaseModel], question: Callable[[dict[str, Any]], str]
+) -> Callable[..., Any]:
+    """The SDK resolver that asks (``Elicit``) or decides without asking.
+
+    Resolvers work on both protocol eras: a standalone ``elicitation/create`` request mid-call
+    before 2026-07-28, an ``InputRequiredResult`` round after it (``ctx.elicit()`` alone cannot).
+    """
+
+    async def resolve_confirmation(ctx: Context) -> Any:
+        mode = confirm_mode()
+        if mode == "off":
+            return Confirm(confirm=True)
+        if not can_ask(ctx):
+            if mode == "require":
+                raise ToolFailed("cancelled: confirmation unavailable")
+            return Confirm(
+                confirm=True
+            )  # ask: a client without forms keeps the 1.1.x behaviour
+        arguments = model.model_validate(sent.get()).model_dump(mode="json")
+        return Elicit(question(arguments), Confirm)
+
+    return resolve_confirmation
 
 
 # --- configuration ------------------------------------------------------------------------------
@@ -284,10 +362,12 @@ class Extension:
     """What a cell's ``mcp_extend`` hook gets to add tools that follow the same rules.
 
     ``call(method, path, **httpx_kwargs)`` reaches the cell API as the caller; ``add(name, model,
-    description, handler, keep_null=False)`` registers a strict tool whose handler gets the
-    validated arguments. By default nulls are dropped, like list filters; a write tool passes
-    ``keep_null=True`` to get exactly what the caller set (an explicit null clears a field, unset
-    arguments stay out).
+    description, handler, keep_null=False, confirm=False, confirm_message=None)`` registers a
+    strict tool whose handler gets the validated arguments. By default nulls are dropped, like list
+    filters; a write tool passes ``keep_null=True`` to get exactly what the caller set (an explicit
+    null clears a field, unset arguments stay out). A destructive tool passes ``confirm=True`` to
+    ask the person first (SPEC-003); ``confirm_message(arguments)`` words the question and must
+    not include secrets.
     """
 
     cell: Cell
@@ -309,6 +389,12 @@ class StrictMCPServer(MCPServer):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.argument_models: dict[str, type[Strict]] = {}
+        # SPEC-003: tool name -> the question to ask, built from the validated arguments.
+        self.confirm_messages: dict[str, Callable[[dict[str, Any]], str]] = {}
+
+    @property
+    def confirm(self) -> set[str]:
+        return set(self.confirm_messages)
 
     async def list_tools(self) -> list[MCPTool]:
         tools = await super().list_tools()
@@ -335,14 +421,27 @@ class StrictMCPServer(MCPServer):
             )
             raise ToolFailed(f"invalid_arguments: {', '.join(fields)}") from exc
         token = sent.set(dict(arguments or {}))
+        said_yes = confirmed.set(False)
         try:
             return await super().call_tool(name, arguments, context)
+        except ToolFailed:
+            raise
+        except Exception as exc:
+            if name not in self.confirm_messages or confirmed.get():
+                raise
+            # SPEC-003: before the person said yes, the API saw nothing. A refusal from the resolver
+            # (the SDK may wrap it) keeps its word; an invalid reply or a broken channel is a "no".
+            cause: BaseException | None = exc
+            while cause is not None and not isinstance(cause, ToolFailed):
+                cause = cause.__cause__ or cause.__context__
+            raise (cause or ToolFailed("cancelled: not confirmed")) from None
         finally:
+            confirmed.reset(said_yes)
             sent.reset(token)
 
 
 def _with_signature(
-    function: Callable[..., Any], model: type[Strict]
+    function: Callable[..., Any], model: type[Strict], *, confirmation: Any = None
 ) -> Callable[..., Any]:
     """Give ``function`` the model's fields as its keyword parameters (what the server introspects)."""
     params = []
@@ -354,6 +453,14 @@ def _with_signature(
                 inspect.Parameter.KEYWORD_ONLY,
                 default=default,
                 annotation=info.annotation,
+            )
+        )
+    if (
+        confirmation is not None
+    ):  # SPEC-003: filled by the SDK resolver, never by the caller
+        params.append(
+            inspect.Parameter(
+                "confirmation", inspect.Parameter.KEYWORD_ONLY, annotation=confirmation
             )
         )
     function.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
@@ -416,8 +523,18 @@ def build_server(
         handler: Callable[[dict[str, Any]], Any],
         *,
         drop_none: bool,
+        confirm: Callable[[dict[str, Any]], str] | None = None,
     ) -> None:
         def function(**kwargs: Any) -> Any:
+            if confirm is not None:
+                outcome = kwargs.get("confirmation")
+                if not (
+                    isinstance(outcome, AcceptedElicitation)
+                    and isinstance(outcome.data, Confirm)
+                    and outcome.data.confirm
+                ):
+                    raise ToolFailed("cancelled: not confirmed")
+                confirmed.set(True)
             checked = model.model_validate(sent.get())
             # list drops unset filters; the others send exactly what the caller set (null clears a field).
             return handler(
@@ -427,9 +544,24 @@ def build_server(
             )
 
         function.__name__ = name.replace(".", "_").replace("-", "_")
+        if confirm is not None and "confirmation" in model.model_fields:
+            raise ConfigError(
+                f"{name}: an argument named 'confirmation' clashes with SPEC-003"
+            )
         server.argument_models[name] = model
+        if confirm is not None:
+            server.confirm_messages[name] = confirm
         server.tool(name=name, description=description)(
-            _with_signature(function, model)
+            _with_signature(
+                function,
+                model,
+                confirmation=None
+                if confirm is None
+                else Annotated[
+                    ElicitationResult[Confirm],
+                    Resolve(confirmation_resolver(model, confirm)),
+                ],
+            )
         )
         _no_preparse(server, name)
 
@@ -440,12 +572,20 @@ def build_server(
         description: str,
         handler: Callable[[dict[str, Any]], Any],
     ) -> None:
+        question = None
+        if operation == "delete":
+            what = r.name.replace("-", " ")
+
+            def question(a: dict[str, Any], what: str = what) -> str:
+                return f"Delete {cell.name} {what} {a['id']}? This cannot be undone."
+
         register(
             tool_name(cell, r, operation),
             model,
             description,
             handler,
             drop_none=operation == "list",
+            confirm=question,
         )
 
     for r in cell.resources:
@@ -495,6 +635,28 @@ def build_server(
         for operation in operations:
             description, handler = handlers[operation]
             add(r, operation, models[operation], description, handler)
+
+    def extension_add(
+        name: str,
+        model: type[Strict],
+        description: str,
+        handler: Callable[[dict[str, Any]], Any],
+        keep_null: bool = False,
+        confirm: bool = False,
+        confirm_message: Callable[[dict[str, Any]], str] | None = None,
+    ) -> None:
+        def default_message(_arguments: dict[str, Any]) -> str:
+            return f"Run {name}? This cannot be undone."
+
+        register(
+            name,
+            model,
+            description,
+            handler,
+            drop_none=not keep_null,
+            confirm=(confirm_message or default_message) if confirm else None,
+        )
+
     if cell.mcp_extend:
         module, _, function = cell.mcp_extend.partition(":")
         # nosemgrep: python.lang.security.audit.non-literal-import.non-literal-import -- module comes from the repo-owned cell.yaml mcp_extend key, never from a request
@@ -503,9 +665,7 @@ def build_server(
             Extension(
                 cell=cell,
                 call=call,
-                add=lambda name, model, description, handler, keep_null=False: register(
-                    name, model, description, handler, drop_none=not keep_null
-                ),
+                add=extension_add,
                 read_only=read_only,
             )
         )
