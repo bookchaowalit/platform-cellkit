@@ -2,6 +2,12 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.2.2 (2026-11-28)
+- mcp (SPEC-003, fourth Codex review): only an answer to a form that was actually shown spends a round. Under `EMPIRE_MCP_CONFIRM=off`, a 2026-07-28 client sending `inputResponses: {}` without `requestState` had every call share one key, so the second delete with the tool was refused as `confirmation already used`.
+- mcp: spent tokens expire by `time.time()`, the clock the SDK checks token `exp` with; `time.monotonic()` could forget a token the SDK still accepted after the wall clock was set back.
+- Disputed (documented in the spec): an extension whose validated payload is not a pure function of its arguments is asked again on 2026-07-28 and sends nothing. That is fail-closed; snapshotting the payload server-side across rounds would replay a stale question into a new call.
+- Red: tests/kit/test_cellkit_mcp_confirm.py (off two deletes; clock set back: both fail on 1.2.1).
+
 ## 1.2.1 (2026-11-28)
 - mcp (SPEC-003, third Codex review of 1.2.0): a 2026-07-28 confirmation is spent under the round's sealed `requestState` token (captured by `CaptureSealedState`, a middleware just outside the SDK's `RequestStateBoundary`), remembered for the SDK ttl (600 s) + 60 s. 1.2.0 keyed on tool + question for 5 minutes, so a replay between 300 s and 600 s went through, and a genuine re-confirmation (e.g. after a `409`) was refused.
 - mcp: `Extension.add(..., confirm=True)` now requires `confirm_message` (refused at registration); 1.2.0's default `Run <tool>?` did not show what would be destroyed. No released cell uses `confirm=True` yet.
