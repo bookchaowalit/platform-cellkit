@@ -85,6 +85,14 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - (1.2.4 review) A direct `call_tool()` without a transport (tests, an embedded server) keys a
   2026-07-28 round on the plaintext question, so a second form for the same record is refused as
   used. Every transport goes through `CaptureSealedState`, which keys on the unique sealed token.
+- (1.2.4 review) A token file that cannot be read when the question is built (deleted or
+  unreadable after `<cell>-mcp` started) ends the call with `cancelled: not confirmed`, not with a
+  message about the token file. Fail-closed; next release: turn read errors in `_read_token_file()`
+  into a `ConfigError` that names the file, never the value.
+- (1.2.4 review) Spent tokens live in one process. Several server processes sharing the SDK's
+  sealing key would each keep their own store, so a replay could land on another process. Every
+  `<cell>-mcp` runs as one stdio process per person today; a shared store is needed before that
+  changes.
 - An extension tool with `confirm=True` validates its arguments twice in the first round (once by
   `call_tool`, once to build the question). No extension uses `confirm=True` yet; cache the first
   result if one with a costly validator appears.
