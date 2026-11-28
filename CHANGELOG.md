@@ -2,6 +2,11 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.2.4 (2026-11-28)
+- mcp (SPEC-003, Codex review of the cell bumps, P1): a confirmation is bound to the workspace it named. When the person is asked, the kit reads the bearer token once, adds `Where: workspace <ws>.` to the question (claim `ws`, read for display only; a token that is not a JWT with `ws` shows a 12-hex fingerprint, never the token) and sends the DELETE with that same token. Before, the DELETE re-read the token, so an `EMPIRE_TOKEN_FILE` swapped to another workspace while the form was open could delete that workspace's record with the same id. On 2026-07-28 the answering request rebuilds the question with the token current then: another workspace changes the question, so the SDK asks again and nothing is sent.
+- `off` and the no-form shortcut ask nothing and read the token as before.
+- Red: tests/kit/test_cellkit_mcp_confirm.py (named workspace, token swapped while the form is open, 2026 answer for another workspace: 3 fail on 1.2.3).
+
 ## 1.2.3 (2026-11-28)
 - mcp (SPEC-003, Codex review of the cell bumps to 1.2.2): `inputResponses: {}` without `requestState` answers nothing, so it is a first round. Under the default `ask`, a 2026-07-28 client without forms that sent it was treated as answering an earlier question and got `cancelled: not confirmed`; it now keeps the 1.1.x delete (and `require` refuses it with `cancelled: confirmation unavailable`). A form client sending it is asked as before.
 - Red: tests/kit/test_cellkit_mcp_confirm.py (empty inputResponses: 2 of 3 fail on 1.2.2).
