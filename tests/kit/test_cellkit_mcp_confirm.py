@@ -269,11 +269,9 @@ def test_an_extension_tool_without_confirm_is_unchanged(monkeypatch):
     assert [r.url.path for r in seen] == ["/v1/widgets/purge"]
 
 
-def test_a_confirmed_extension_tool_gets_a_default_message(monkeypatch):
-    server, _ = make_server(extension_cell(monkeypatch, confirm=True))
-    ctx = FakeContext(accept(True))
-    run(server, "kit-sample.purge", {"before": "2026-01-01"}, ctx)
-    assert ctx.asked[0][0] == "Run kit-sample.purge? This cannot be undone."
+def test_a_confirmed_extension_tool_must_name_its_target(monkeypatch):
+    with pytest.raises(kit_mcp.ConfigError, match="needs a confirm_message"):
+        make_server(extension_cell(monkeypatch, confirm=True))
 
 
 def test_read_only_servers_register_no_tool_that_asks():
@@ -367,20 +365,99 @@ def test_an_answered_round_reaches_the_api_once():
     assert [r.method for r in seen] == ["DELETE"]
 
 
-def test_the_same_delete_again_waits_out_the_replay_window(monkeypatch):
+def sealed_run(server, token, arguments, context):
+    """call_tool as the transport runs it: CaptureSealedState saw this sealed token."""
+
+    async def main():
+        async def call_next(_ctx):
+            return await server.call_tool("kit-sample.part.delete", arguments, context)
+
+        params = {"name": "kit-sample.part.delete", "requestState": token}
+        return await kit_mcp.CaptureSealedState()(
+            types.SimpleNamespace(params=params), call_next
+        )
+
+    return asyncio.run(main())
+
+
+def test_a_replayed_sealed_round_is_refused_until_the_token_expires(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr(kit_mcp.time, "monotonic", lambda: clock[0])
     server, seen = make_server()
     answer, state = answered_round(server)
-    run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
+    with pytest.raises(ToolError, match="confirmation already used"):
+        sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
+    assert server.used_round_ttl == 600.0 + kit_mcp.USED_ROUND_MARGIN
+    clock[0] += server.used_round_ttl + 1
+    sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
+    assert [r.method for r in seen] == ["DELETE", "DELETE"]
+
+
+def test_a_new_call_for_the_same_record_gets_a_new_round():
+    """E.g. the first DELETE answered 409; the person confirms again right away."""
+    server, seen = make_server()
+    answer, state = answered_round(server)
+    sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
     answer, state = answered_round(
         server
-    )  # a new call: the SDK state is the same bytes
-    with pytest.raises(ToolError, match="confirmation already used"):
-        run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
-    clock[0] += kit_mcp.USED_ROUND_TTL + 1
-    run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    )  # same plaintext, but the SDK seals a new token
+    sealed_run(server, "mcp1.token-B", {"id": 9}, RoundContext(answer, state))
     assert [r.method for r in seen] == ["DELETE", "DELETE"]
+
+
+def test_end_to_end_the_round_is_keyed_by_the_sealed_token(monkeypatch):
+    server, seen = make_server()
+    keys: list[str | None] = []
+    real = kit_mcp.CallState
+
+    def spy(**kwargs):
+        keys.append(kwargs.get("sealed"))
+        return real(**kwargs)
+
+    monkeypatch.setattr(kit_mcp, "CallState", spy)
+
+    async def on_elicit(context, params):
+        return mcp_types.ElicitResult(action="accept", content={"confirm": True})
+
+    async def main():
+        async with Client(server, elicitation_callback=on_elicit) as client:
+            for _ in range(2):
+                await client.call_tool("kit-sample.part.delete", {"id": 9})
+
+    asyncio.run(main())
+    sealed = [k for k in keys if k is not None]
+    assert len(sealed) == 2
+    assert sealed[0] != sealed[1]  # a new token per round, never the plaintext
+    assert all("outcomes" not in k for k in sealed)
+    assert [r.method for r in seen] == ["DELETE", "DELETE"]
+
+
+def test_the_question_is_built_only_when_asking(monkeypatch):
+    def broken(_arguments):
+        raise LookupError("no label for this id")
+
+    def register(ext: kit_mcp.Extension) -> None:
+        ext.add(
+            "kit-sample.purge",
+            PurgeArgs,
+            "Purge.",
+            lambda a: ext.call("POST", "/v1/widgets/purge", json=a),
+            confirm=True,
+            confirm_message=broken,
+        )
+
+    module = types.ModuleType("kit_broken_hook")
+    module.register_mcp = register
+    monkeypatch.setitem(sys.modules, "kit_broken_hook", module)
+    server, seen = make_server(
+        replace(load(FIXTURE_SPEC), mcp_extend="kit_broken_hook")
+    )
+    monkeypatch.setenv("EMPIRE_MCP_CONFIRM", "off")
+    run(server, "kit-sample.purge", {"before": "x"}, FakeContext(accept(True)))
+    monkeypatch.setenv("EMPIRE_MCP_CONFIRM", "ask")
+    run(server, "kit-sample.purge", {"before": "x"}, FakeContext(capabilities=None))
+    assert [r.url.path for r in seen] == ["/v1/widgets/purge"] * 2
 
 
 def test_another_record_is_its_own_round():
@@ -408,7 +485,7 @@ def test_a_full_memory_refuses_instead_of_forgetting(monkeypatch):
     spent = [server.spend_round(k) for k in ("a", "b", "c")]
     assert spent == ["ok", "ok", "full"]
     assert server.spend_round("a") == "used"  # the oldest is still remembered
-    clock[0] += kit_mcp.USED_ROUND_TTL + 1
+    clock[0] += server.used_round_ttl + 1
     assert server.spend_round("c") == "ok"  # expired keys make room
     assert list(server.used_rounds) == ["c"]
 

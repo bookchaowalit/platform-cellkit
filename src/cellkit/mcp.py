@@ -58,6 +58,7 @@ from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.resolve import Elicit, Resolve
+from mcp.server.request_state import RequestStateBoundary
 from mcp_types import Tool as MCPTool
 from pydantic import (
     BaseModel,
@@ -179,16 +180,38 @@ class CallState:
     payload: dict[str, Any] | None = None
     question: str | None = None
     confirmed: bool = False
+    # The sealed requestState token of this round (None on a direct call_tool without transport).
+    sealed: str | None = None
 
 
 call_state: contextvars.ContextVar[CallState | None] = contextvars.ContextVar(
     "call_state", default=None
 )
 USED_ROUNDS_KEPT = 4096
-# A confirmation given in a 2026-07-28 round is spent under a key the server derives (tool name +
-# question), never from what the client echoes. The SDK's request_state is deterministic, so a
-# replay and a new call that asks the same question look alike: the key is refused for this long.
-USED_ROUND_TTL = 300.0
+# A confirmation given in a 2026-07-28 round is spent under the sealed requestState token the SDK
+# minted for that round (AES-GCM with a random nonce, so every round's token is new and a replay
+# repeats it). A spent token is remembered while the SDK would still accept it (its ttl, 600 s by
+# default) plus a margin, then forgotten.
+USED_ROUND_MARGIN = 60.0
+DEFAULT_STATE_TTL = 600.0
+
+# The sealed token of this request, captured before the SDK's boundary replaces it with plaintext.
+sealed_request_state: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "sealed_request_state", default=None
+)
+
+
+class CaptureSealedState:
+    """Server middleware placed just outside the SDK's RequestStateBoundary."""
+
+    async def __call__(self, ctx: Any, call_next: Callable[[Any], Any]) -> Any:
+        params = getattr(ctx, "params", None)
+        token = params.get("requestState") if isinstance(params, dict) else None
+        reset = sealed_request_state.set(token if isinstance(token, str) else None)
+        try:
+            return await call_next(ctx)
+        finally:
+            sealed_request_state.reset(reset)
 
 
 def is_continuation(context: Any) -> bool:
@@ -212,7 +235,6 @@ def confirmation_resolver(
         if state is None:  # pragma: no cover - call_tool always sets it
             raise ToolFailed("cancelled: not confirmed")
         state.payload = payload()
-        state.question = question(state.payload)
         mode = confirm_mode()
         if mode == "off":
             return Confirm(confirm=True)
@@ -222,6 +244,8 @@ def confirmation_resolver(
             if mode == "require":
                 raise ToolFailed("cancelled: confirmation unavailable")
             return Confirm(confirm=True)  # ask: the 1.1.x behaviour
+        # Only now build the question: a message that cannot be built never blocks off/no-form calls.
+        state.question = question(state.payload)
         return Elicit(state.question, Confirm)
 
     return resolve_confirmation
@@ -429,15 +453,28 @@ class StrictMCPServer(MCPServer):
         self.confirm_messages: dict[str, Callable[[dict[str, Any]], str]] = {}
         self.used_rounds: OrderedDict[str, float] = OrderedDict()
         self.used_rounds_lock = threading.Lock()
+        # Capture the sealed requestState just outside the SDK boundary that unseals it.
+        chain = self._lowlevel_server.middleware
+        boundary = next(
+            (i for i, m in enumerate(chain) if isinstance(m, RequestStateBoundary)),
+            None,
+        )
+        chain.insert(len(chain) if boundary is None else boundary, CaptureSealedState())
+        security = getattr(
+            chain[-1] if boundary is None else chain[boundary + 1], "_security", None
+        )
+        self.used_round_ttl = (
+            float(getattr(security, "ttl", DEFAULT_STATE_TTL)) + USED_ROUND_MARGIN
+        )
 
     def spend_round(self, key: str) -> Literal["ok", "used", "full"]:
-        """Spend a confirmation key: "used" while it was spent within USED_ROUND_TTL (a replay),
+        """Spend a confirmation key: "used" while it was spent within used_round_ttl (a replay),
         "full" when USED_ROUNDS_KEPT unexpired keys are held (refuse rather than forget one)."""
         now = time.monotonic()
         with self.used_rounds_lock:
             while (
                 self.used_rounds
-                and next(iter(self.used_rounds.values())) <= now - USED_ROUND_TTL
+                and next(iter(self.used_rounds.values())) <= now - self.used_round_ttl
             ):
                 self.used_rounds.popitem(last=False)
             if key in self.used_rounds:
@@ -476,7 +513,9 @@ class StrictMCPServer(MCPServer):
             )
             raise ToolFailed(f"invalid_arguments: {', '.join(fields)}") from exc
         token = sent.set(dict(arguments or {}))
-        state = CallState(continuation=is_continuation(context))
+        state = CallState(
+            continuation=is_continuation(context), sealed=sealed_request_state.get()
+        )
         state_token = call_state.set(state)
         try:
             return await super().call_tool(name, arguments, context)
@@ -603,13 +642,14 @@ def build_server(
                 if state is None or state.payload is None:  # pragma: no cover
                     raise ToolFailed("cancelled: not confirmed")
                 if state.continuation:
-                    key = hashlib.sha256(
-                        f"{name}\0{state.question}".encode()
-                    ).hexdigest()
+                    # The sealed token is unique per round; without a transport (a direct
+                    # call_tool) fall back to the plaintext state the SDK handed the resolver.
+                    round_id = state.sealed or f"plain:{state.question}"
+                    key = hashlib.sha256(f"{name}\0{round_id}".encode()).hexdigest()
                     spent = server.spend_round(key)
                     if spent == "used":
                         raise ToolFailed(
-                            "cancelled: confirmation already used (a replayed round; retry in a few minutes to delete again)"
+                            "cancelled: confirmation already used (a replayed round; call the tool again to be asked again)"
                         )
                     if spent == "full":
                         raise ToolFailed(
@@ -721,16 +761,19 @@ def build_server(
         confirm: bool = False,
         confirm_message: Callable[[dict[str, Any]], str] | None = None,
     ) -> None:
-        def default_message(_arguments: dict[str, Any]) -> str:
-            return f"Run {name}? This cannot be undone."
-
+        if confirm and confirm_message is None:
+            # The person must see what is destroyed (which records, which range); only the
+            # extension knows which arguments say that and which are safe to show.
+            raise ConfigError(
+                f"{name}: confirm=True needs a confirm_message naming the target"
+            )
         register(
             name,
             model,
             description,
             handler,
             drop_none=not keep_null,
-            confirm=(confirm_message or default_message) if confirm else None,
+            confirm=confirm_message if confirm else None,
         )
 
     if cell.mcp_extend:
