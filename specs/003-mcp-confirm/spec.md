@@ -78,6 +78,13 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - The question names the record by id, not by version: a record deleted and re-imported with the
   same `legacy_id` while the form is open is deleted on the yes. The generated `DELETE` route takes
   no `expected_version`; binding the version needs that API change first.
+- (1.2.4 review) An extension tool with `confirm=True` that sends its own `Authorization` through
+  `ext.call()`, or an `httpx.Client` built with `auth`, can send another token than the one the
+  question named; its `confirm_message` also runs on the event loop. No extension uses
+  `confirm=True` yet; the first one must use the kit's bearer and a cheap, pure message.
+- (1.2.4 review) A direct `call_tool()` without a transport (tests, an embedded server) keys a
+  2026-07-28 round on the plaintext question, so a second form for the same record is refused as
+  used. Every transport goes through `CaptureSealedState`, which keys on the unique sealed token.
 - An extension tool with `confirm=True` validates its arguments twice in the first round (once by
   `call_tool`, once to build the question). No extension uses `confirm=True` yet; cache the first
   result if one with a costly validator appears.
