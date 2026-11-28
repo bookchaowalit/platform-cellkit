@@ -39,7 +39,6 @@ import contextvars
 import hashlib
 import importlib
 import inspect
-import json
 import os
 import re
 import sys
@@ -170,35 +169,33 @@ def can_ask(context: Any) -> bool:
 @dataclass
 class CallState:
     """One tool call. A mutable object, so the tool body (run by the SDK in a worker thread, on a
-    copy of the context) can tell call_tool that the person said yes."""
+    copy of the context) and call_tool see the same values."""
 
+    # 2026-07-28: the client is answering an earlier InputRequiredResult (requestState or
+    # inputResponses present); such a round never takes the "client cannot ask" shortcut.
+    continuation: bool = False
+    # The validated payload and the question built from it, computed once per round so the
+    # handler gets exactly what the question showed.
+    payload: dict[str, Any] | None = None
+    question: str | None = None
     confirmed: bool = False
-    # 2026-07-28: digest of the round that carried the answer; each one may reach the API once.
-    round_key: str | None = None
 
 
 call_state: contextvars.ContextVar[CallState | None] = contextvars.ContextVar(
     "call_state", default=None
 )
 USED_ROUNDS_KEPT = 4096
-# The SDK's request_state is deterministic: a replayed round and a new call that deletes the same id
-# with the same answer look alike. A spent round is refused for this long, then forgotten.
+# A confirmation given in a 2026-07-28 round is spent under a key the server derives (tool name +
+# question), never from what the client echoes. The SDK's request_state is deterministic, so a
+# replay and a new call that asks the same question look alike: the key is refused for this long.
 USED_ROUND_TTL = 300.0
 
 
-def round_key(context: Any) -> str | None:
-    """Digest of an answered input_required round (request_state + input_responses), else None."""
-    state = getattr(context, "request_state", None)
-    responses = getattr(context, "input_responses", None)
-    if state is None and responses is None:
-        return None
-    if isinstance(responses, dict):
-        responses = {
-            k: v.model_dump(mode="json") if isinstance(v, BaseModel) else v
-            for k, v in responses.items()
-        }
-    raw = json.dumps([state, responses], sort_keys=True, default=str)
-    return hashlib.sha256(raw.encode()).hexdigest()
+def is_continuation(context: Any) -> bool:
+    return (
+        getattr(context, "request_state", None) is not None
+        or getattr(context, "input_responses", None) is not None
+    )
 
 
 def confirmation_resolver(
@@ -211,16 +208,21 @@ def confirmation_resolver(
     """
 
     async def resolve_confirmation(ctx: Context) -> Any:
+        state = call_state.get()
+        if state is None:  # pragma: no cover - call_tool always sets it
+            raise ToolFailed("cancelled: not confirmed")
+        state.payload = payload()
+        state.question = question(state.payload)
         mode = confirm_mode()
         if mode == "off":
             return Confirm(confirm=True)
-        if not can_ask(ctx):
+        # The shortcut is for a call that starts on a client without forms; a round answering an
+        # earlier question must be decided by that answer (the SDK re-asks or fails without one).
+        if not state.continuation and not can_ask(ctx):
             if mode == "require":
                 raise ToolFailed("cancelled: confirmation unavailable")
-            return Confirm(
-                confirm=True
-            )  # ask: a client without forms keeps the 1.1.x behaviour
-        return Elicit(question(payload()), Confirm)  # the same payload the handler gets
+            return Confirm(confirm=True)  # ask: the 1.1.x behaviour
+        return Elicit(state.question, Confirm)
 
     return resolve_confirmation
 
@@ -428,19 +430,22 @@ class StrictMCPServer(MCPServer):
         self.used_rounds: OrderedDict[str, float] = OrderedDict()
         self.used_rounds_lock = threading.Lock()
 
-    def spend_round(self, key: str) -> bool:
-        """Record an answered round; False when it already reached the API (a replay)."""
+    def spend_round(self, key: str) -> Literal["ok", "used", "full"]:
+        """Spend a confirmation key: "used" while it was spent within USED_ROUND_TTL (a replay),
+        "full" when USED_ROUNDS_KEPT unexpired keys are held (refuse rather than forget one)."""
         now = time.monotonic()
         with self.used_rounds_lock:
-            while self.used_rounds and (
-                len(self.used_rounds) >= USED_ROUNDS_KEPT
-                or next(iter(self.used_rounds.values())) <= now - USED_ROUND_TTL
+            while (
+                self.used_rounds
+                and next(iter(self.used_rounds.values())) <= now - USED_ROUND_TTL
             ):
                 self.used_rounds.popitem(last=False)
             if key in self.used_rounds:
-                return False
+                return "used"
+            if len(self.used_rounds) >= USED_ROUNDS_KEPT:
+                return "full"
             self.used_rounds[key] = now
-            return True
+            return "ok"
 
     @property
     def confirm(self) -> set[str]:
@@ -471,7 +476,7 @@ class StrictMCPServer(MCPServer):
             )
             raise ToolFailed(f"invalid_arguments: {', '.join(fields)}") from exc
         token = sent.set(dict(arguments or {}))
-        state = CallState(round_key=round_key(context))
+        state = CallState(continuation=is_continuation(context))
         state_token = call_state.set(state)
         try:
             return await super().call_tool(name, arguments, context)
@@ -595,16 +600,23 @@ def build_server(
                 ):
                     raise ToolFailed("cancelled: not confirmed")
                 state = call_state.get()
-                if (
-                    state is not None
-                    and state.round_key is not None
-                    and not server.spend_round(state.round_key)
-                ):
-                    raise ToolFailed(
-                        "cancelled: confirmation already used (a replayed round; retry in a few minutes to delete again)"
-                    )
-                if state is not None:
-                    state.confirmed = True
+                if state is None or state.payload is None:  # pragma: no cover
+                    raise ToolFailed("cancelled: not confirmed")
+                if state.continuation:
+                    key = hashlib.sha256(
+                        f"{name}\0{state.question}".encode()
+                    ).hexdigest()
+                    spent = server.spend_round(key)
+                    if spent == "used":
+                        raise ToolFailed(
+                            "cancelled: confirmation already used (a replayed round; retry in a few minutes to delete again)"
+                        )
+                    if spent == "full":
+                        raise ToolFailed(
+                            "cancelled: too many recent confirmations; retry in a few minutes"
+                        )
+                state.confirmed = True
+                return handler(state.payload)  # exactly what the question showed
             return handler(payload())
 
         function.__name__ = name.replace(".", "_").replace("-", "_")

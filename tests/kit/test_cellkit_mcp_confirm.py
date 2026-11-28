@@ -400,13 +400,120 @@ def test_another_record_is_its_own_round():
     assert [r.url.path for r in seen] == ["/v1/parts/9", "/v1/parts/10"]
 
 
-def test_the_used_round_memory_is_bounded(monkeypatch):
+def test_a_full_memory_refuses_instead_of_forgetting(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(kit_mcp.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(kit_mcp, "USED_ROUNDS_KEPT", 2)
     server, _ = make_server()
     spent = [server.spend_round(k) for k in ("a", "b", "c")]
-    assert spent == [True, True, True]
-    assert list(server.used_rounds) == ["b", "c"]
-    assert server.spend_round("c") is False
+    assert spent == ["ok", "ok", "full"]
+    assert server.spend_round("a") == "used"  # the oldest is still remembered
+    clock[0] += kit_mcp.USED_ROUND_TTL + 1
+    assert server.spend_round("c") == "ok"  # expired keys make room
+    assert list(server.used_rounds) == ["c"]
+
+
+def test_a_full_memory_refuses_the_call(monkeypatch):
+    monkeypatch.setattr(kit_mcp, "USED_ROUNDS_KEPT", 0)
+    server, seen = make_server()
+    answer, state = answered_round(server)
+    with pytest.raises(ToolError, match="too many recent confirmations"):
+        run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    assert seen == []
+
+
+# --- Codex review of ddc038a -----------------------------------------------------------------------
+
+
+class NoFormRound(RoundContext):
+    def __init__(self, responses=None, state=None):
+        super().__init__(responses, state)
+        self.client_capabilities = (
+            None  # a later round that does not repeat its capabilities
+        )
+
+
+def test_a_later_round_without_capabilities_is_decided_by_its_answer():
+    server, seen = make_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext())
+    (key,) = first.input_requests
+    declined = {key: mcp_types.ElicitResult(action="decline")}
+    with pytest.raises(ToolError, match="cancelled: not confirmed"):
+        run(
+            server,
+            "kit-sample.part.delete",
+            {"id": 9},
+            NoFormRound(declined, first.request_state),
+        )
+    assert seen == []
+    accepted = {key: mcp_types.ElicitResult(action="accept", content={"confirm": True})}
+    run(
+        server,
+        "kit-sample.part.delete",
+        {"id": 9},
+        NoFormRound(accepted, first.request_state),
+    )
+    assert [r.method for r in seen] == ["DELETE"]
+
+
+def test_a_replay_with_changed_echo_is_still_a_replay():
+    server, seen = make_server()
+    answer, state = answered_round(server)
+    run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    (key,) = answer
+    reworded = json.dumps(json.loads(state), indent=2)
+    with_meta = {
+        key: mcp_types.ElicitResult(
+            action="accept", content={"confirm": True}, _meta={"client": "retry"}
+        )
+    }
+    with pytest.raises(ToolError, match="confirmation already used"):
+        run(
+            server,
+            "kit-sample.part.delete",
+            {"id": 9},
+            RoundContext(with_meta, reworded),
+        )
+    assert [r.method for r in seen] == ["DELETE"]
+
+
+def test_the_handler_gets_the_payload_the_question_was_built_from(monkeypatch):
+    counter = iter(range(100))
+    got: list[dict] = []
+
+    class Stamped(Strict):
+        """A time-like default: every validation stamps a new value."""
+
+        stamp: int | None = None
+
+        @pydantic.model_validator(mode="after")
+        def stamped(self) -> Stamped:
+            if self.stamp is None:
+                self.stamp = next(counter)
+            return self
+
+    def purge(arguments: dict) -> dict:
+        got.append(arguments)
+        return {"ok": True}
+
+    def register(ext: kit_mcp.Extension) -> None:
+        ext.add(
+            "kit-sample.stamp",
+            Stamped,
+            "Purge up to a stamp.",
+            purge,
+            confirm=True,
+            confirm_message=lambda a: f"Purge up to {a.get('stamp')}?",
+        )
+
+    module = types.ModuleType("kit_stamp_hook")
+    module.register_mcp = register
+    monkeypatch.setitem(sys.modules, "kit_stamp_hook", module)
+    server, _ = make_server(replace(load(FIXTURE_SPEC), mcp_extend="kit_stamp_hook"))
+    ctx = FakeContext(accept(True))
+    run(server, "kit-sample.stamp", {}, ctx)
+    assert ctx.asked[0][0] == f"Purge up to {got[0]['stamp']}?"
+    assert got[0]["stamp"] is not None
 
 
 class SinceArgs(Strict):

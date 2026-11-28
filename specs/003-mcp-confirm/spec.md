@@ -20,17 +20,28 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   person is asked, then the API is called.
 - **Form:** one boolean field `confirm`, validated strictly (`"true"` or `1` is not a tick). The message names the cell, the record type and the id,
   for example `Delete kit-sample part 9? This cannot be undone.` Extension tools may give their own
-  message, built from the same payload the handler receives. The generated message never includes
-  a token or field values.
+  message. The payload is validated once per round: the question is built from it and the handler
+  receives that same payload. An extension's message must name every argument that decides what is
+  destroyed, because the SDK re-asks when the question changes between rounds and the replay key
+  below is the question. The generated message never includes a token or field values.
 - **Outcomes:** accept with `confirm: true` calls the API. Accept with `false`, decline, cancel, a
   reply that does not match the form, or an error while asking all end the call with the tool
   error `cancelled: not confirmed`, and nothing is sent to the API. An error after the yes (the API
   may have acted) is reported as that error, never as cancelled.
-- **One answer, one call (2026-07-28):** an answered `InputRequiredResult` round reaches the API
-  once. The SDK's `request_state` is deterministic, so a replayed round and a new call that deletes
-  the same id with the same answer look the same: an answered round is refused with `cancelled:
-  confirmation already used` for 5 minutes (`USED_ROUND_TTL`), then forgotten. The initialize
+- **One answer, one call (2026-07-28):** a confirmation given in an `InputRequiredResult` round is
+  spent under a key the server derives from the tool name and the question, never from what the
+  client echoes (`requestState`, `inputResponses`, `_meta`). The SDK's `request_state` is
+  deterministic, so a replayed round and a new call that asks the same question look the same: the
+  key is refused with `cancelled: confirmation already used` for 5 minutes (`USED_ROUND_TTL`), then
+  forgotten. At most 4096 unexpired keys are kept; when full, a new confirmation is refused
+  (`cancelled: too many recent confirmations`) rather than forgetting one early. The initialize
   handshake asks mid-call, so it has no replay round.
+- **Later rounds:** the "client cannot show a form" shortcut of `ask` applies only to a call's first
+  round. A round answering an earlier question is decided by that answer, even if it does not
+  repeat the client's capabilities.
+- **Out of scope:** a client that forges `requestState` outcomes can skip the form, exactly as a
+  client can auto-accept it. Elicitation trusts the client; this protects the person from the
+  model, not from a hostile client.
 - **Mode, `EMPIRE_MCP_CONFIRM`:**
   - `ask` (default, also when unset or empty): ask when the client declares form elicitation.
     A client that cannot show a form gets the 1.1.x behaviour (no question), so no client loses
@@ -56,4 +67,7 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - AC8: end to end, an in-process MCP client with an elicitation callback sees the form, and its
   answer decides whether the API is called.
 - AC9: an accept whose `confirm` is `"true"`, `1` or `"yes"` sends nothing, on both protocol eras.
-- AC10: replaying an answered 2026-07-28 round sends nothing; another record is its own round.
+- AC10: replaying an answered 2026-07-28 round sends nothing, also with reformatted `requestState`
+  or changed `_meta`; another record is its own round; a full key store refuses.
+- AC11: a later round without capabilities that declines sends nothing.
+- AC12: the handler receives the payload the question was built from.
