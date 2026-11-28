@@ -1,7 +1,7 @@
 # SPEC-003: Ask the person before an MCP tool deletes
 
 Status: approved by the owner on 2026-11-28 ("ทำเลย": add MCP Elicitation to the cellkit tools that
-delete). Ships in kit 1.2.0; replay and extension rules tightened in 1.2.1.
+delete). Ships in kit 1.2.0; replay and extension rules tightened in 1.2.1 and 1.2.2.
 
 ## Problem
 
@@ -25,6 +25,11 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   The payload is validated once per round: the question is built from it, only when the person is
   actually asked (`off` and the no-form shortcut never call the message builder), and the handler
   receives that same payload. The generated message never includes a token or field values.
+  An extension's validated payload must be a pure function of the call's arguments (no clock or
+  counter in a default or validator): on 2026-07-28 the answer arrives in a later request, the
+  payload and question are rebuilt there, and the SDK re-asks when the question changed. A
+  non-deterministic payload therefore fails closed (asked again, nothing sent); a time bound belongs
+  in an explicit argument the person sees.
 - **Outcomes:** accept with `confirm: true` calls the API. Accept with `false`, decline, cancel, a
   reply that does not match the form, or an error while asking all end the call with the tool
   error `cancelled: not confirmed`, and nothing is sent to the API. An error after the yes (the API
@@ -34,7 +39,9 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   under that round's sealed token, captured by a middleware just outside the SDK boundary, so a
   replay (the same token again) is refused with `cancelled: confirmation already used`, while a new
   call for the same record (for example after a `409`) gets a new token and is asked again. A spent
-  token is remembered for the SDK's ttl plus 60 s, past the point the SDK would accept it. At most
+  token is remembered for the SDK's ttl plus 60 s by the wall clock the SDK checks expiry with, so
+  setting the clock back cannot forget a token the SDK still accepts (1.2.2). Only an answer to a
+  form that was actually shown spends a round: `off` and the no-form shortcut never do (1.2.2). At most
   4096 unexpired tokens are kept; when full, a new confirmation is refused (`cancelled: too many
   recent confirmations`) rather than forgetting one early. The initialize handshake asks mid-call,
   so it has no replay round. (1.2.0 keyed on tool + question for 5 minutes, which refused a genuine
@@ -76,5 +83,7 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - AC12: the handler receives the payload the question was built from.
 - AC13 (1.2.1): a replayed sealed round is refused until the SDK ttl + 60 s; a new call for the same
   record (new token) is asked and sent; end to end, rounds are keyed by distinct sealed tokens.
+- AC15 (1.2.2): `off` with `inputResponses: {}` and no `requestState` deletes two records in a row;
+  a spent token survives the wall clock being set back.
 - AC14 (1.2.1): `confirm=True` without `confirm_message` fails at registration; a message builder
   that raises does not block `off` or the no-form shortcut.

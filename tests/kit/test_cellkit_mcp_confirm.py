@@ -382,7 +382,7 @@ def sealed_run(server, token, arguments, context):
 
 def test_a_replayed_sealed_round_is_refused_until_the_token_expires(monkeypatch):
     clock = [1000.0]
-    monkeypatch.setattr(kit_mcp.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kit_mcp.time, "time", lambda: clock[0])
     server, seen = make_server()
     answer, state = answered_round(server)
     sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
@@ -479,7 +479,7 @@ def test_another_record_is_its_own_round():
 
 def test_a_full_memory_refuses_instead_of_forgetting(monkeypatch):
     clock = [1000.0]
-    monkeypatch.setattr(kit_mcp.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(kit_mcp.time, "time", lambda: clock[0])
     monkeypatch.setattr(kit_mcp, "USED_ROUNDS_KEPT", 2)
     server, _ = make_server()
     spent = [server.spend_round(k) for k in ("a", "b", "c")]
@@ -636,3 +636,39 @@ def test_an_error_after_the_yes_is_not_reported_as_cancelled():
         ToolError, match=r"^Error executing tool kit-sample\.part\.delete$"
     ):
         run(server, "kit-sample.part.delete", {"id": 9}, FakeContext(accept(True)))
+
+
+# --- Codex review of 3803b86 -----------------------------------------------------------------------
+
+
+def test_off_on_a_2026_round_spends_nothing(monkeypatch):
+    """A client may send inputResponses: {} without requestState; no form was shown."""
+    monkeypatch.setenv("EMPIRE_MCP_CONFIRM", "off")
+    server, seen = make_server()
+    for record in (9, 10):
+        run(server, "kit-sample.part.delete", {"id": record}, RoundContext({}, None))
+    assert [r.url.path for r in seen] == ["/v1/parts/9", "/v1/parts/10"]
+    assert server.used_rounds == {}
+
+
+def test_the_no_form_shortcut_spends_nothing():
+    server, seen = make_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, NoFormRound())
+    assert [r.method for r in seen] == ["DELETE"]
+    assert first is not None
+    assert server.used_rounds == {}
+
+
+def test_a_clock_set_back_keeps_the_spent_token(monkeypatch):
+    wall, mono = [10_000.0], [500.0]
+    monkeypatch.setattr(kit_mcp.time, "time", lambda: wall[0])
+    monkeypatch.setattr(kit_mcp.time, "monotonic", lambda: mono[0])
+    server, seen = make_server()
+    answer, state = answered_round(server)
+    sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
+    # 700 s pass, but the wall clock was set back an hour: the SDK (wall-clock exp) still takes it.
+    mono[0] += 700
+    wall[0] += 700 - 3600
+    with pytest.raises(ToolError, match="confirmation already used"):
+        sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
+    assert [r.method for r in seen] == ["DELETE"]

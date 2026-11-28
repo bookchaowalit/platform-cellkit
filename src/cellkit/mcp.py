@@ -179,6 +179,8 @@ class CallState:
     # handler gets exactly what the question showed.
     payload: dict[str, Any] | None = None
     question: str | None = None
+    # True when the resolver asked (Elicit): only an answer to a real form spends a round.
+    asked: bool = False
     confirmed: bool = False
     # The sealed requestState token of this round (None on a direct call_tool without transport).
     sealed: str | None = None
@@ -246,6 +248,7 @@ def confirmation_resolver(
             return Confirm(confirm=True)  # ask: the 1.1.x behaviour
         # Only now build the question: a message that cannot be built never blocks off/no-form calls.
         state.question = question(state.payload)
+        state.asked = True
         return Elicit(state.question, Confirm)
 
     return resolve_confirmation
@@ -470,7 +473,9 @@ class StrictMCPServer(MCPServer):
     def spend_round(self, key: str) -> Literal["ok", "used", "full"]:
         """Spend a confirmation key: "used" while it was spent within used_round_ttl (a replay),
         "full" when USED_ROUNDS_KEPT unexpired keys are held (refuse rather than forget one)."""
-        now = time.monotonic()
+        # Wall clock, like the SDK's token expiry (iat/exp from time.time()): a key is forgotten only
+        # once the SDK would also reject its token, even if the clock is set back.
+        now = time.time()
         with self.used_rounds_lock:
             while (
                 self.used_rounds
@@ -641,7 +646,7 @@ def build_server(
                 state = call_state.get()
                 if state is None or state.payload is None:  # pragma: no cover
                     raise ToolFailed("cancelled: not confirmed")
-                if state.continuation:
+                if state.continuation and state.asked:
                     # The sealed token is unique per round; without a transport (a direct
                     # call_tool) fall back to the plaintext state the SDK handed the resolver.
                     round_id = state.sealed or f"plain:{state.question}"
