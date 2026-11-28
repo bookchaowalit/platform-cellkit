@@ -50,7 +50,7 @@ Signed events (SPEC-002, `specs/002-signed-events`): `<CELL>_EVENT_SIGNING_KEY` 
 `<CELL>_EVENT_KEYS` and `<CELL>_EVENT_SIGNATURES=off|report|enforce` on consumers.
 
 Confirm before delete (SPEC-003, `specs/003-mcp-confirm`): every MCP `delete` tool, and an
-extension tool added with `ext.add(..., confirm=True)`, asks the person through MCP form
+extension tool added with `ext.add(..., confirm=True, confirm_message=fn)`, asks the person through MCP form
 elicitation before it calls the API. `EMPIRE_MCP_CONFIRM=ask` (default) skips the question for a
 client that cannot show a form, `require` refuses that client, `off` never asks.
 

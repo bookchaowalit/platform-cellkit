@@ -2,6 +2,12 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.2.1 (2026-11-28)
+- mcp (SPEC-003, third Codex review of 1.2.0): a 2026-07-28 confirmation is spent under the round's sealed `requestState` token (captured by `CaptureSealedState`, a middleware just outside the SDK's `RequestStateBoundary`), remembered for the SDK ttl (600 s) + 60 s. 1.2.0 keyed on tool + question for 5 minutes, so a replay between 300 s and 600 s went through, and a genuine re-confirmation (e.g. after a `409`) was refused.
+- mcp: `Extension.add(..., confirm=True)` now requires `confirm_message` (refused at registration); 1.2.0's default `Run <tool>?` did not show what would be destroyed. No released cell uses `confirm=True` yet.
+- mcp: the confirmation message is built only when the person is asked, so a builder that raises cannot block `EMPIRE_MCP_CONFIRM=off` or the no-form shortcut.
+- Red: tests/kit/test_cellkit_mcp_confirm.py (53 tests; replay at 301-600 s and re-confirmation after a fresh round failed on 1.2.0).
+
 ## 1.2.0 (2026-11-28)
 - mcp (SPEC-003): every generated `delete` tool asks the person through MCP form elicitation before it calls the API; only an accept with `confirm: true` sends the DELETE. Decline, cancel, an unticked box, an invalid reply or an error while asking return `cancelled: not confirmed` and send nothing. Built on the SDK's `Resolve`/`Elicit` resolvers, so it works on protocol 2026-07-28 (`InputRequiredResult` rounds) and on the initialize handshake (mid-call `elicitation/create`).
 - mcp: `EMPIRE_MCP_CONFIRM=ask|require|off`. `ask` (default, also when empty) keeps the 1.1.13 behaviour for a client that declares no form elicitation; `require` refuses it with `cancelled: confirmation unavailable`; any other value counts as `require`.
