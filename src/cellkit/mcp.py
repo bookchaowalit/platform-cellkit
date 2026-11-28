@@ -36,14 +36,19 @@ value counts as ``require``.
 from __future__ import annotations
 
 import contextvars
+import hashlib
 import importlib
 import inspect
+import json
 import os
 import re
 import sys
+import threading
+import time
 import urllib.parse
 import uuid
 import warnings
+from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -126,7 +131,9 @@ class ConfigError(RuntimeError):
 
 
 class Confirm(BaseModel):
-    """The elicitation form: one box the person ticks."""
+    """The elicitation form: one box the person ticks. Strict: "true" or 1 is not a tick."""
+
+    model_config = ConfigDict(strict=True)
 
     confirm: bool = PydanticField(
         description="Tick to go ahead. Leave it unticked, decline or cancel to stop."
@@ -160,14 +167,42 @@ def can_ask(context: Any) -> bool:
     return elicitation.form is not None or elicitation.url is None
 
 
-# Set inside a confirm tool's body once the person said yes: an error before it means "not confirmed".
-confirmed: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    "confirmed", default=False
+@dataclass
+class CallState:
+    """One tool call. A mutable object, so the tool body (run by the SDK in a worker thread, on a
+    copy of the context) can tell call_tool that the person said yes."""
+
+    confirmed: bool = False
+    # 2026-07-28: digest of the round that carried the answer; each one may reach the API once.
+    round_key: str | None = None
+
+
+call_state: contextvars.ContextVar[CallState | None] = contextvars.ContextVar(
+    "call_state", default=None
 )
+USED_ROUNDS_KEPT = 4096
+# The SDK's request_state is deterministic: a replayed round and a new call that deletes the same id
+# with the same answer look alike. A spent round is refused for this long, then forgotten.
+USED_ROUND_TTL = 300.0
+
+
+def round_key(context: Any) -> str | None:
+    """Digest of an answered input_required round (request_state + input_responses), else None."""
+    state = getattr(context, "request_state", None)
+    responses = getattr(context, "input_responses", None)
+    if state is None and responses is None:
+        return None
+    if isinstance(responses, dict):
+        responses = {
+            k: v.model_dump(mode="json") if isinstance(v, BaseModel) else v
+            for k, v in responses.items()
+        }
+    raw = json.dumps([state, responses], sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def confirmation_resolver(
-    model: type[BaseModel], question: Callable[[dict[str, Any]], str]
+    payload: Callable[[], dict[str, Any]], question: Callable[[dict[str, Any]], str]
 ) -> Callable[..., Any]:
     """The SDK resolver that asks (``Elicit``) or decides without asking.
 
@@ -185,8 +220,7 @@ def confirmation_resolver(
             return Confirm(
                 confirm=True
             )  # ask: a client without forms keeps the 1.1.x behaviour
-        arguments = model.model_validate(sent.get()).model_dump(mode="json")
-        return Elicit(question(arguments), Confirm)
+        return Elicit(question(payload()), Confirm)  # the same payload the handler gets
 
     return resolve_confirmation
 
@@ -391,6 +425,22 @@ class StrictMCPServer(MCPServer):
         self.argument_models: dict[str, type[Strict]] = {}
         # SPEC-003: tool name -> the question to ask, built from the validated arguments.
         self.confirm_messages: dict[str, Callable[[dict[str, Any]], str]] = {}
+        self.used_rounds: OrderedDict[str, float] = OrderedDict()
+        self.used_rounds_lock = threading.Lock()
+
+    def spend_round(self, key: str) -> bool:
+        """Record an answered round; False when it already reached the API (a replay)."""
+        now = time.monotonic()
+        with self.used_rounds_lock:
+            while self.used_rounds and (
+                len(self.used_rounds) >= USED_ROUNDS_KEPT
+                or next(iter(self.used_rounds.values())) <= now - USED_ROUND_TTL
+            ):
+                self.used_rounds.popitem(last=False)
+            if key in self.used_rounds:
+                return False
+            self.used_rounds[key] = now
+            return True
 
     @property
     def confirm(self) -> set[str]:
@@ -421,14 +471,15 @@ class StrictMCPServer(MCPServer):
             )
             raise ToolFailed(f"invalid_arguments: {', '.join(fields)}") from exc
         token = sent.set(dict(arguments or {}))
-        said_yes = confirmed.set(False)
+        state = CallState(round_key=round_key(context))
+        state_token = call_state.set(state)
         try:
             return await super().call_tool(name, arguments, context)
         except ToolFailed:
             raise
         except Exception as exc:
-            if name not in self.confirm_messages or confirmed.get():
-                raise
+            if name not in self.confirm_messages or state.confirmed:
+                raise  # after a yes the API may have acted: never report it as cancelled
             # SPEC-003: before the person said yes, the API saw nothing. A refusal from the resolver
             # (the SDK may wrap it) keeps its word; an invalid reply or a broken channel is a "no".
             cause: BaseException | None = exc
@@ -436,7 +487,7 @@ class StrictMCPServer(MCPServer):
                 cause = cause.__cause__ or cause.__context__
             raise (cause or ToolFailed("cancelled: not confirmed")) from None
         finally:
-            confirmed.reset(said_yes)
+            call_state.reset(state_token)
             sent.reset(token)
 
 
@@ -525,6 +576,15 @@ def build_server(
         drop_none: bool,
         confirm: Callable[[dict[str, Any]], str] | None = None,
     ) -> None:
+        def payload() -> dict[str, Any]:
+            checked = model.model_validate(sent.get())
+            # list drops unset filters; the others send exactly what the caller set (null clears a field).
+            return (
+                checked.model_dump(mode="json", exclude_none=True)
+                if drop_none
+                else checked.model_dump(mode="json", exclude_unset=True)
+            )
+
         def function(**kwargs: Any) -> Any:
             if confirm is not None:
                 outcome = kwargs.get("confirmation")
@@ -534,14 +594,18 @@ def build_server(
                     and outcome.data.confirm
                 ):
                     raise ToolFailed("cancelled: not confirmed")
-                confirmed.set(True)
-            checked = model.model_validate(sent.get())
-            # list drops unset filters; the others send exactly what the caller set (null clears a field).
-            return handler(
-                checked.model_dump(mode="json", exclude_none=True)
-                if drop_none
-                else checked.model_dump(mode="json", exclude_unset=True)
-            )
+                state = call_state.get()
+                if (
+                    state is not None
+                    and state.round_key is not None
+                    and not server.spend_round(state.round_key)
+                ):
+                    raise ToolFailed(
+                        "cancelled: confirmation already used (a replayed round; retry in a few minutes to delete again)"
+                    )
+                if state is not None:
+                    state.confirmed = True
+            return handler(payload())
 
         function.__name__ = name.replace(".", "_").replace("-", "_")
         if confirm is not None and "confirmation" in model.model_fields:
@@ -559,7 +623,7 @@ def build_server(
                 if confirm is None
                 else Annotated[
                     ElicitationResult[Confirm],
-                    Resolve(confirmation_resolver(model, confirm)),
+                    Resolve(confirmation_resolver(payload, confirm)),
                 ],
             )
         )

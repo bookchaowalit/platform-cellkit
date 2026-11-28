@@ -18,12 +18,19 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   `ext.add(..., confirm=True)`. `confirm` defaults to `False`, so existing extension tools do not change.
 - **Order:** the arguments are validated first (a call with bad arguments asks nothing), then the
   person is asked, then the API is called.
-- **Form:** one boolean field `confirm`. The message names the cell, the record type and the id,
+- **Form:** one boolean field `confirm`, validated strictly (`"true"` or `1` is not a tick). The message names the cell, the record type and the id,
   for example `Delete kit-sample part 9? This cannot be undone.` Extension tools may give their own
-  message. The message never includes a token or field values.
+  message, built from the same payload the handler receives. The generated message never includes
+  a token or field values.
 - **Outcomes:** accept with `confirm: true` calls the API. Accept with `false`, decline, cancel, a
   reply that does not match the form, or an error while asking all end the call with the tool
-  error `cancelled: not confirmed`, and nothing is sent to the API.
+  error `cancelled: not confirmed`, and nothing is sent to the API. An error after the yes (the API
+  may have acted) is reported as that error, never as cancelled.
+- **One answer, one call (2026-07-28):** an answered `InputRequiredResult` round reaches the API
+  once. The SDK's `request_state` is deterministic, so a replayed round and a new call that deletes
+  the same id with the same answer look the same: an answered round is refused with `cancelled:
+  confirmation already used` for 5 minutes (`USED_ROUND_TTL`), then forgotten. The initialize
+  handshake asks mid-call, so it has no replay round.
 - **Mode, `EMPIRE_MCP_CONFIRM`:**
   - `ask` (default, also when unset or empty): ask when the client declares form elicitation.
     A client that cannot show a form gets the 1.1.x behaviour (no question), so no client loses
@@ -46,5 +53,7 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - AC5: an unknown `EMPIRE_MCP_CONFIRM` value acts as `require`; an empty one acts as `ask`.
 - AC6: list, get, create and update never ask; an extension tool asks only with `confirm=True`.
 - AC7: invalid arguments are refused before anything is asked.
+- AC9: an accept whose `confirm` is `"true"`, `1` or `"yes"` sends nothing, on both protocol eras.
+- AC10: replaying an answered 2026-07-28 round sends nothing; another record is its own round.
 - AC8: end to end, an in-process MCP client with an elicitation callback sees the form, and its
   answer decides whether the API is called.

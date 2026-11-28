@@ -315,3 +315,140 @@ def test_end_to_end_the_clients_answer_decides(action, deletes, mode):
     assert [r.method for r in seen] == (["DELETE"] if deletes else [])
     if not deletes:
         assert "cancelled: not confirmed" in result.content[0].text
+
+
+# --- Codex review of 48113f8 -----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "mode", ["auto", "legacy"], ids=["2026-07-28", "initialize-handshake"]
+)
+@pytest.mark.parametrize("value", ["true", 1, "yes"])
+def test_only_a_real_boolean_true_is_a_tick(value, mode):
+    server, seen = make_server()
+
+    async def on_elicit(context, params):
+        return mcp_types.ElicitResult(action="accept", content={"confirm": value})
+
+    async def main():
+        async with Client(server, elicitation_callback=on_elicit, mode=mode) as client:
+            return await client.call_tool("kit-sample.part.delete", {"id": 9})
+
+    result = asyncio.run(main())
+    assert result.is_error
+    assert seen == []
+
+
+class RoundContext(FakeContext):
+    """A 2026-07-28 request: the SDK answers with InputRequiredResult rounds."""
+
+    def __init__(self, responses=None, state=None):
+        super().__init__()
+        self.protocol_version = "2026-07-28"
+        self.input_responses = responses
+        self.request_state = state
+
+
+def answered_round(server):
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext())
+    assert first.result_type == "input_required"
+    (key,) = first.input_requests
+    answer = {key: mcp_types.ElicitResult(action="accept", content={"confirm": True})}
+    return answer, first.request_state
+
+
+def test_an_answered_round_reaches_the_api_once():
+    server, seen = make_server()
+    answer, state = answered_round(server)
+    run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    assert [r.method for r in seen] == ["DELETE"]
+    with pytest.raises(ToolError, match=r"^cancelled: confirmation already used "):
+        run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    assert [r.method for r in seen] == ["DELETE"]
+
+
+def test_the_same_delete_again_waits_out_the_replay_window(monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr(kit_mcp.time, "monotonic", lambda: clock[0])
+    server, seen = make_server()
+    answer, state = answered_round(server)
+    run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    answer, state = answered_round(
+        server
+    )  # a new call: the SDK state is the same bytes
+    with pytest.raises(ToolError, match="confirmation already used"):
+        run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    clock[0] += kit_mcp.USED_ROUND_TTL + 1
+    run(server, "kit-sample.part.delete", {"id": 9}, RoundContext(answer, state))
+    assert [r.method for r in seen] == ["DELETE", "DELETE"]
+
+
+def test_another_record_is_its_own_round():
+    server, seen = make_server()
+    for record in (9, 10):
+        first = run(server, "kit-sample.part.delete", {"id": record}, RoundContext())
+        (key,) = first.input_requests
+        answer = {
+            key: mcp_types.ElicitResult(action="accept", content={"confirm": True})
+        }
+        run(
+            server,
+            "kit-sample.part.delete",
+            {"id": record},
+            RoundContext(answer, first.request_state),
+        )
+    assert [r.url.path for r in seen] == ["/v1/parts/9", "/v1/parts/10"]
+
+
+def test_the_used_round_memory_is_bounded(monkeypatch):
+    monkeypatch.setattr(kit_mcp, "USED_ROUNDS_KEPT", 2)
+    server, _ = make_server()
+    spent = [server.spend_round(k) for k in ("a", "b", "c")]
+    assert spent == [True, True, True]
+    assert list(server.used_rounds) == ["b", "c"]
+    assert server.spend_round("c") is False
+
+
+class SinceArgs(Strict):
+    before: str = "2000-01-01"
+    note: str | None = None
+
+
+def test_the_question_shows_what_the_handler_gets(monkeypatch):
+    got: list[dict] = []
+
+    def purge(arguments: dict) -> dict:
+        got.append(arguments)
+        return {"ok": True}
+
+    def register(ext: kit_mcp.Extension) -> None:
+        ext.add(
+            "kit-sample.purge",
+            SinceArgs,
+            "Purge.",
+            purge,
+            keep_null=True,
+            confirm=True,
+            confirm_message=lambda a: f"Purge {json.dumps(a, sort_keys=True)}?",
+        )
+
+    module = types.ModuleType("kit_payload_hook")
+    module.register_mcp = register
+    monkeypatch.setitem(sys.modules, "kit_payload_hook", module)
+    server, _ = make_server(replace(load(FIXTURE_SPEC), mcp_extend="kit_payload_hook"))
+    ctx = FakeContext(accept(True))
+    run(server, "kit-sample.purge", {"note": None}, ctx)
+    assert got == [{"note": None}]
+    assert ctx.asked[0][0] == f"Purge {json.dumps(got[0], sort_keys=True)}?"
+
+
+def test_an_error_after_the_yes_is_not_reported_as_cancelled():
+    def reply(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json", request=request)
+
+    client = httpx.Client(base_url=API, transport=httpx.MockTransport(reply))
+    server = kit_mcp.build_server(load(FIXTURE_SPEC), client, lambda: TOKEN)
+    with pytest.raises(
+        ToolError, match=r"^Error executing tool kit-sample\.part\.delete$"
+    ):
+        run(server, "kit-sample.part.delete", {"id": 9}, FakeContext(accept(True)))
