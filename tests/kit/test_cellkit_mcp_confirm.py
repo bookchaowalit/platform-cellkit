@@ -672,3 +672,32 @@ def test_a_clock_set_back_keeps_the_spent_token(monkeypatch):
     with pytest.raises(ToolError, match="confirmation already used"):
         sealed_run(server, "mcp1.token-A", {"id": 9}, RoundContext(answer, state))
     assert [r.method for r in seen] == ["DELETE"]
+
+
+# --- Codex review of the cell bumps to 1.2.2 -----------------------------------------------------------
+
+
+def test_empty_input_responses_without_state_is_a_first_round_for_a_formless_client(
+    monkeypatch,
+):
+    """inputResponses: {} answers nothing: a client without forms keeps the 1.1.x delete under ask."""
+    monkeypatch.setenv("EMPIRE_MCP_CONFIRM", "ask")
+    server, seen = make_server()
+    run(server, "kit-sample.part.delete", {"id": 9}, NoFormRound({}, None))
+    assert [r.method for r in seen] == ["DELETE"]
+    assert server.used_rounds == {}
+
+
+def test_empty_input_responses_without_state_under_require_is_refused(monkeypatch):
+    monkeypatch.setenv("EMPIRE_MCP_CONFIRM", "require")
+    server, seen = make_server()
+    with pytest.raises(ToolError, match="cancelled: confirmation unavailable"):
+        run(server, "kit-sample.part.delete", {"id": 9}, NoFormRound({}, None))
+    assert seen == []
+
+
+def test_empty_input_responses_without_state_asks_a_form_client():
+    server, seen = make_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext({}, None))
+    assert first.result_type == "input_required"
+    assert seen == []
