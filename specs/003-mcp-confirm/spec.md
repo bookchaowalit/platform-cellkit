@@ -62,6 +62,19 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - **Unchanged:** `EMPIRE_MCP_READONLY=1` still registers no delete tool. The HTTP API, SQL,
   routes, permissions and `cell.yaml` are unchanged.
 
+## Known gaps (Codex review of 2fbeb8d..9fb4cb0, 2026-11-28; accepted, not fixed)
+
+- A round answered with decline, cancel or `confirm: false` is not spent, so the client can send the
+  same sealed token again with an accept and the API is called. Only the client can build that
+  answer, and the trust rule above already lets a client accept the form itself; a person who
+  declined and then retries gets a new round.
+- A spent token is forgotten after ttl + 60 s by the wall clock. If the server clock is then set back
+  into the token's lifetime, the SDK accepts it again and a client replay is not caught. This needs
+  the host clock to go back more than about 11 minutes; the SDK's own `exp` check fails the same way.
+- An extension tool with `confirm=True` validates its arguments twice in the first round (once by
+  `call_tool`, once to build the question). No extension uses `confirm=True` yet; cache the first
+  result if one with a costly validator appears.
+
 ## Acceptance criteria
 
 - AC1: under `ask`, a client with form elicitation is asked once per delete, and the API sees the
