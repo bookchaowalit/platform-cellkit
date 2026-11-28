@@ -740,7 +740,8 @@ def test_the_question_names_the_tokens_workspace_never_the_token():
     ctx = FakeContext(accept(True))
     run(server, "kit-sample.part.delete", {"id": 9}, ctx)
     message = ctx.asked[0][0]
-    assert message.endswith(f"\nWhere: workspace {WS_A}.")
+    assert message.endswith(f"\nWhere: {kit_mcp.token_scope(current[0])}.")
+    assert f"workspace {WS_A}, token " in message
     assert current[0] not in message
     assert "sigA" not in message
 
@@ -793,6 +794,22 @@ def test_a_2026_answer_for_the_same_workspace_sends_with_that_token():
     assert [r.headers["Authorization"] for r in seen] == [
         f"Bearer {jwt_for(WS_A, 'sigA')}"
     ]
+
+
+def test_a_2026_answer_under_another_token_in_the_same_workspace_is_asked_again():
+    server, seen, current = swapping_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext())
+    (key,) = first.input_requests
+    answer = {key: mcp_types.ElicitResult(action="accept", content={"confirm": True})}
+    current[0] = jwt_for(WS_A, "another-user")
+    again = run(
+        server,
+        "kit-sample.part.delete",
+        {"id": 9},
+        RoundContext(answer, first.request_state),
+    )
+    assert seen == []
+    assert again.result_type == "input_required"
 
 
 @pytest.mark.parametrize("token", ["opaque-token-value", "a.!!!.c", "a.e30.c", ""])

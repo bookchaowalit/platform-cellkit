@@ -56,6 +56,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import anyio
+import anyio.to_thread
 import httpx
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context, MCPServer
@@ -234,15 +236,17 @@ def is_continuation(context: Any) -> bool:
 
 
 def token_scope(token: str) -> str:
-    """What the question names as the place of the delete: the token's workspace (claim ``ws``,
-    read without verifying, for display only; the API verifies), else a short fingerprint, so a
-    changed token always changes the question. Never the token itself."""
+    """Where the question says the delete acts: the token's workspace (claim ``ws``, read without
+    verifying, for display only; the API verifies) and always a 12-hex token fingerprint, so any
+    other token (another workspace or another user in the same one) changes the question. Never
+    the token itself."""
+    fingerprint = f"token {hashlib.sha256(token.encode()).hexdigest()[:12]}"
     try:
         part = token.split(".")[1]
         claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
-        return f"workspace {uuid.UUID(str(claims['ws']))}"
+        return f"workspace {uuid.UUID(str(claims['ws']))}, {fingerprint}"
     except (IndexError, ValueError, KeyError, TypeError, binascii.Error):
-        return f"token {hashlib.sha256(token.encode()).hexdigest()[:12]}"
+        return fingerprint
 
 
 def confirmation_resolver(
@@ -277,7 +281,8 @@ def confirmation_resolver(
             # a later request that rebuilds the question with the token current then: a swapped
             # token changes the question, so the SDK asks again instead of reusing the answer.
             try:
-                state.token = _checked(token())
+                # Off the event loop: the token may come from a file on a slow mount.
+                state.token = _checked(await anyio.to_thread.run_sync(token))
             except ConfigError as exc:
                 raise ToolFailed(str(exc)) from None
             text = f"{text}\nWhere: {token_scope(state.token)}."

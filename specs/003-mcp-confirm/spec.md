@@ -22,10 +22,10 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   for example `Delete kit-sample part 9? This cannot be undone.` Extension tools may give their own
   message, and must: `confirm=True` without `confirm_message` is refused at registration (1.2.1),
   because only the extension knows which arguments say what is destroyed and which are safe to show.
-  The kit adds where the delete acts (1.2.4): `Where: workspace <ws>.` from the caller's token
-  (claim `ws`, display only; otherwise `token <12-hex fingerprint>`), and the confirmed call sends
-  that same token, so a token swapped while the form is open never acts on another workspace; on
-  2026-07-28 a swap changes the rebuilt question and the SDK asks again.
+  The kit adds where the delete acts (1.2.4): `Where: workspace <ws>, token <12-hex fingerprint>.` from the
+  caller's token (claim `ws`, display only; the fingerprint alone without it; read off the event
+  loop), and the confirmed call sends that same token, so a token swapped while the form is open is
+  never used; on 2026-07-28 any other token changes the rebuilt question and the SDK asks again.
   The payload is validated once per round: the question is built from it, only when the person is
   actually asked (`off` and the no-form shortcut never call the message builder), and the handler
   receives that same payload. The generated message never includes a token or field values.
@@ -109,6 +109,7 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   without forms deletes as on 1.1.x, under `require` it is refused, and a form client is asked.
 - AC17 (1.2.4): the question names the token's workspace and never the token; a token swapped
   while the form is open is not used (the DELETE carries the token the question named); a 2026-07-28
-  answer under another workspace is asked again and sends nothing.
+  answer under another token (another workspace or another user in it) is asked again and sends
+  nothing.
 - AC14 (1.2.1): `confirm=True` without `confirm_message` fails at registration; a message builder
   that raises does not block `off` or the no-form shortcut.
