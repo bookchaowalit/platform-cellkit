@@ -217,9 +217,13 @@ class CaptureSealedState:
 
 
 def is_continuation(context: Any) -> bool:
-    return (
-        getattr(context, "request_state", None) is not None
-        or getattr(context, "input_responses", None) is not None
+    """A round that answers an earlier question: it carries requestState or at least one response.
+
+    ``inputResponses: {}`` without ``requestState`` answers nothing, so it is a first round: a client
+    without forms keeps the no-form shortcut (1.2.3, Codex review of the cell bumps).
+    """
+    return getattr(context, "request_state", None) is not None or bool(
+        getattr(context, "input_responses", None)
     )
 
 

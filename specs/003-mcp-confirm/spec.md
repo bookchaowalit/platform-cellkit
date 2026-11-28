@@ -85,5 +85,7 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   record (new token) is asked and sent; end to end, rounds are keyed by distinct sealed tokens.
 - AC15 (1.2.2): `off` with `inputResponses: {}` and no `requestState` deletes two records in a row;
   a spent token survives the wall clock being set back.
+- AC16 (1.2.3): `inputResponses: {}` without `requestState` is a first round: under `ask` a client
+  without forms deletes as on 1.1.x, under `require` it is refused, and a form client is asked.
 - AC14 (1.2.1): `confirm=True` without `confirm_message` fails at registration; a message builder
   that raises does not block `off` or the no-form shortcut.

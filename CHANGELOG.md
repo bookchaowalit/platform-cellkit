@@ -2,6 +2,10 @@
 
 Each release is a tag `vX.Y.Z` with the wheel attached. Services pin it in `pyproject.toml`.
 
+## 1.2.3 (2026-11-28)
+- mcp (SPEC-003, Codex review of the cell bumps to 1.2.2): `inputResponses: {}` without `requestState` answers nothing, so it is a first round. Under the default `ask`, a 2026-07-28 client without forms that sent it was treated as answering an earlier question and got `cancelled: not confirmed`; it now keeps the 1.1.x delete (and `require` refuses it with `cancelled: confirmation unavailable`). A form client sending it is asked as before.
+- Red: tests/kit/test_cellkit_mcp_confirm.py (empty inputResponses: 2 of 3 fail on 1.2.2).
+
 ## 1.2.2 (2026-11-28)
 - mcp (SPEC-003, fourth Codex review): only an answer to a form that was actually shown spends a round. Under `EMPIRE_MCP_CONFIRM=off`, a 2026-07-28 client sending `inputResponses: {}` without `requestState` had every call share one key, so the second delete with the tool was refused as `confirmation already used`.
 - mcp: spent tokens expire by `time.time()`, the clock the SDK checks token `exp` with; `time.monotonic()` could forget a token the SDK still accepted after the wall clock was set back.
