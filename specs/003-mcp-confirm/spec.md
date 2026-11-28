@@ -22,6 +22,10 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   for example `Delete kit-sample part 9? This cannot be undone.` Extension tools may give their own
   message, and must: `confirm=True` without `confirm_message` is refused at registration (1.2.1),
   because only the extension knows which arguments say what is destroyed and which are safe to show.
+  The kit adds where the delete acts (1.2.4): `Where: workspace <ws>, token <12-hex fingerprint>.` from the
+  caller's token (claim `ws`, display only; the fingerprint alone without it; read off the event
+  loop), and the confirmed call sends that same token, so a token swapped while the form is open is
+  never used; on 2026-07-28 any other token changes the rebuilt question and the SDK asks again.
   The payload is validated once per round: the question is built from it, only when the person is
   actually asked (`off` and the no-form shortcut never call the message builder), and the handler
   receives that same payload. The generated message never includes a token or field values.
@@ -71,6 +75,9 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - A spent token is forgotten after ttl + 60 s by the wall clock. If the server clock is then set back
   into the token's lifetime, the SDK accepts it again and a client replay is not caught. This needs
   the host clock to go back more than about 11 minutes; the SDK's own `exp` check fails the same way.
+- The question names the record by id, not by version: a record deleted and re-imported with the
+  same `legacy_id` while the form is open is deleted on the yes. The generated `DELETE` route takes
+  no `expected_version`; binding the version needs that API change first.
 - An extension tool with `confirm=True` validates its arguments twice in the first round (once by
   `call_tool`, once to build the question). No extension uses `confirm=True` yet; cache the first
   result if one with a costly validator appears.
@@ -100,5 +107,9 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
   a spent token survives the wall clock being set back.
 - AC16 (1.2.3): `inputResponses: {}` without `requestState` is a first round: under `ask` a client
   without forms deletes as on 1.1.x, under `require` it is refused, and a form client is asked.
+- AC17 (1.2.4): the question names the token's workspace and never the token; a token swapped
+  while the form is open is not used (the DELETE carries the token the question named); a 2026-07-28
+  answer under another token (another workspace or another user in it) is asked again and sends
+  nothing.
 - AC14 (1.2.1): `confirm=True` without `confirm_message` fails at registration; a message builder
   that raises does not block `off` or the no-form shortcut.

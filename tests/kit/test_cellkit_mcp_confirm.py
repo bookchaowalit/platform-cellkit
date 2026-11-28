@@ -33,6 +33,8 @@ from cellkit.spec import load
 
 API = "https://api.example"
 TOKEN = "tok-SECRET-do-not-print-123456"
+# 1.2.4: every question names where it acts; TOKEN is not a JWT, so a fingerprint.
+WHERE = f"\nWhere: {kit_mcp.token_scope(TOKEN)}."
 FORM = ClientCapabilities(
     elicitation=ElicitationCapability(form=FormElicitationCapability())
 )
@@ -97,7 +99,7 @@ def test_an_accepted_confirmation_sends_the_delete():
     assert [(r.method, r.url.path) for r in seen] == [("DELETE", "/v1/parts/9")]
     assert len(ctx.asked) == 1
     message, schema = ctx.asked[0]
-    assert message == "Delete kit-sample part 9? This cannot be undone."
+    assert message == "Delete kit-sample part 9? This cannot be undone." + WHERE
     assert TOKEN not in message
     assert set(schema["properties"]) == {"confirm"}
 
@@ -255,7 +257,7 @@ def test_an_extension_tool_asks_only_when_registered_with_confirm(monkeypatch):
     ctx = FakeContext(DeclinedElicitation())
     with pytest.raises(ToolError, match="cancelled: not confirmed"):
         run(server, "kit-sample.purge", {"before": "2026-01-01"}, ctx)
-    assert ctx.asked[0][0] == "Purge widgets before 2026-01-01?"
+    assert ctx.asked[0][0] == "Purge widgets before 2026-01-01?" + WHERE
     run(server, "kit-sample.echo", {"before": "x"}, ctx)
     assert len(ctx.asked) == 1
     assert [r.url.path for r in seen] == ["/v1/widgets"]
@@ -308,7 +310,7 @@ def test_end_to_end_the_clients_answer_decides(action, deletes, mode):
 
     result, version = asyncio.run(main())
     assert version == ("2026-07-28" if mode == "auto" else "2025-11-25")
-    assert shown == ["Delete kit-sample part 9? This cannot be undone."]
+    assert shown == ["Delete kit-sample part 9? This cannot be undone." + WHERE]
     assert bool(result.is_error) is not deletes
     assert [r.method for r in seen] == (["DELETE"] if deletes else [])
     if not deletes:
@@ -589,7 +591,7 @@ def test_the_handler_gets_the_payload_the_question_was_built_from(monkeypatch):
     server, _ = make_server(replace(load(FIXTURE_SPEC), mcp_extend="kit_stamp_hook"))
     ctx = FakeContext(accept(True))
     run(server, "kit-sample.stamp", {}, ctx)
-    assert ctx.asked[0][0] == f"Purge up to {got[0]['stamp']}?"
+    assert ctx.asked[0][0] == f"Purge up to {got[0]['stamp']}?" + WHERE
     assert got[0]["stamp"] is not None
 
 
@@ -623,7 +625,7 @@ def test_the_question_shows_what_the_handler_gets(monkeypatch):
     ctx = FakeContext(accept(True))
     run(server, "kit-sample.purge", {"note": None}, ctx)
     assert got == [{"note": None}]
-    assert ctx.asked[0][0] == f"Purge {json.dumps(got[0], sort_keys=True)}?"
+    assert ctx.asked[0][0] == f"Purge {json.dumps(got[0], sort_keys=True)}?" + WHERE
 
 
 def test_an_error_after_the_yes_is_not_reported_as_cancelled():
@@ -701,3 +703,118 @@ def test_empty_input_responses_without_state_asks_a_form_client():
     first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext({}, None))
     assert first.result_type == "input_required"
     assert seen == []
+
+
+# --- 1.2.4: the confirmation is bound to the workspace the question named ---------------------------
+
+WS_A = "11111111-1111-4111-8111-111111111111"
+WS_B = "22222222-2222-4222-8222-222222222222"
+
+
+def jwt_for(ws: str, tail: str) -> str:
+    """An unsigned JWT-shaped token with a ws claim (the kit reads it for display only)."""
+    import base64
+
+    def seg(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{seg({'alg': 'none'})}.{seg({'ws': ws, 'sub': ws})}.{tail}"
+
+
+def swapping_server():
+    """A server whose token can be swapped mid-call, like an edited EMPIRE_TOKEN_FILE."""
+    current = [jwt_for(WS_A, "sigA")]
+    seen: list[httpx.Request] = []
+
+    def reply(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(204, request=request)
+
+    client = httpx.Client(base_url=API, transport=httpx.MockTransport(reply))
+    server = kit_mcp.build_server(load(FIXTURE_SPEC), client, lambda: current[0])
+    return server, seen, current
+
+
+def test_the_question_names_the_tokens_workspace_never_the_token():
+    server, _, current = swapping_server()
+    ctx = FakeContext(accept(True))
+    run(server, "kit-sample.part.delete", {"id": 9}, ctx)
+    message = ctx.asked[0][0]
+    assert message.endswith(f"\nWhere: {kit_mcp.token_scope(current[0])}.")
+    assert f"workspace {WS_A}, token " in message
+    assert current[0] not in message
+    assert "sigA" not in message
+
+
+def test_a_token_swapped_while_the_form_is_open_is_not_used():
+    server, seen, current = swapping_server()
+
+    class Swapping(FakeContext):
+        async def elicit(self, message, schema):
+            current[0] = jwt_for(
+                WS_B, "sigB"
+            )  # the token file changes while the person reads
+            return await super().elicit(message, schema)
+
+    run(server, "kit-sample.part.delete", {"id": 9}, Swapping(accept(True)))
+    assert [r.headers["Authorization"] for r in seen] == [
+        f"Bearer {jwt_for(WS_A, 'sigA')}"
+    ]
+
+
+def test_a_2026_answer_for_another_workspace_is_asked_again():
+    server, seen, current = swapping_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext())
+    (key,) = first.input_requests
+    answer = {key: mcp_types.ElicitResult(action="accept", content={"confirm": True})}
+    current[0] = jwt_for(WS_B, "sigB")
+    again = run(
+        server,
+        "kit-sample.part.delete",
+        {"id": 9},
+        RoundContext(answer, first.request_state),
+    )
+    assert seen == []
+    assert again.result_type == "input_required"
+    (new_key,) = again.input_requests
+    assert f"workspace {WS_B}" in again.input_requests[new_key].params.message
+
+
+def test_a_2026_answer_for_the_same_workspace_sends_with_that_token():
+    server, seen, _ = swapping_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext())
+    (key,) = first.input_requests
+    answer = {key: mcp_types.ElicitResult(action="accept", content={"confirm": True})}
+    run(
+        server,
+        "kit-sample.part.delete",
+        {"id": 9},
+        RoundContext(answer, first.request_state),
+    )
+    assert [r.headers["Authorization"] for r in seen] == [
+        f"Bearer {jwt_for(WS_A, 'sigA')}"
+    ]
+
+
+def test_a_2026_answer_under_another_token_in_the_same_workspace_is_asked_again():
+    server, seen, current = swapping_server()
+    first = run(server, "kit-sample.part.delete", {"id": 9}, RoundContext())
+    (key,) = first.input_requests
+    answer = {key: mcp_types.ElicitResult(action="accept", content={"confirm": True})}
+    current[0] = jwt_for(WS_A, "another-user")
+    again = run(
+        server,
+        "kit-sample.part.delete",
+        {"id": 9},
+        RoundContext(answer, first.request_state),
+    )
+    assert seen == []
+    assert again.result_type == "input_required"
+
+
+@pytest.mark.parametrize("token", ["opaque-token-value", "a.!!!.c", "a.e30.c", ""])
+def test_token_scope_falls_back_to_a_fingerprint(token):
+    scope = kit_mcp.token_scope(token)
+    assert scope.startswith("token ")
+    assert len(scope) == len("token ") + 12
+    assert token == "" or token not in scope

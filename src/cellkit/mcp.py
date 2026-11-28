@@ -35,10 +35,13 @@ value counts as ``require``.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextvars
 import hashlib
 import importlib
 import inspect
+import json
 import os
 import re
 import sys
@@ -53,6 +56,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
+import anyio
+import anyio.to_thread
 import httpx
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context, MCPServer
@@ -184,6 +189,9 @@ class CallState:
     confirmed: bool = False
     # The sealed requestState token of this round (None on a direct call_tool without transport).
     sealed: str | None = None
+    # 1.2.4: the bearer token whose workspace the question named; the confirmed call sends it,
+    # so a token swapped while the form was open can never act on another workspace.
+    token: str | None = None
 
 
 call_state: contextvars.ContextVar[CallState | None] = contextvars.ContextVar(
@@ -227,8 +235,24 @@ def is_continuation(context: Any) -> bool:
     )
 
 
+def token_scope(token: str) -> str:
+    """Where the question says the delete acts: the token's workspace (claim ``ws``, read without
+    verifying, for display only; the API verifies) and always a 12-hex token fingerprint, so any
+    other token (another workspace or another user in the same one) changes the question. Never
+    the token itself."""
+    fingerprint = f"token {hashlib.sha256(token.encode()).hexdigest()[:12]}"
+    try:
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+        return f"workspace {uuid.UUID(str(claims['ws']))}, {fingerprint}"
+    except (IndexError, ValueError, KeyError, TypeError, binascii.Error):
+        return fingerprint
+
+
 def confirmation_resolver(
-    payload: Callable[[], dict[str, Any]], question: Callable[[dict[str, Any]], str]
+    payload: Callable[[], dict[str, Any]],
+    question: Callable[[dict[str, Any]], str],
+    token: Callable[[], str] | None = None,
 ) -> Callable[..., Any]:
     """The SDK resolver that asks (``Elicit``) or decides without asking.
 
@@ -251,7 +275,18 @@ def confirmation_resolver(
                 raise ToolFailed("cancelled: confirmation unavailable")
             return Confirm(confirm=True)  # ask: the 1.1.x behaviour
         # Only now build the question: a message that cannot be built never blocks off/no-form calls.
-        state.question = question(state.payload)
+        text = question(state.payload)
+        if token is not None:
+            # 1.2.4: bind the answer to this token's workspace. On 2026-07-28 the answer arrives in
+            # a later request that rebuilds the question with the token current then: a swapped
+            # token changes the question, so the SDK asks again instead of reusing the answer.
+            try:
+                # Off the event loop: the token may come from a file on a slow mount.
+                state.token = _checked(await anyio.to_thread.run_sync(token))
+            except ConfigError as exc:
+                raise ToolFailed(str(exc)) from None
+            text = f"{text}\nWhere: {token_scope(state.token)}."
+        state.question = text
         state.asked = True
         return Elicit(state.question, Confirm)
 
@@ -598,10 +633,14 @@ def build_server(
         )
 
     def call(method: str, path: str, **kwargs: Any) -> Any:
-        try:
-            bearer_token = _checked(token())
-        except ConfigError as exc:
-            raise ToolFailed(str(exc)) from None
+        state = call_state.get()
+        if state is not None and state.token is not None:
+            bearer_token = state.token  # the token the confirmed question named (1.2.4)
+        else:
+            try:
+                bearer_token = _checked(token())
+            except ConfigError as exc:
+                raise ToolFailed(str(exc)) from None
         headers = {
             "Authorization": f"Bearer {bearer_token}",
             "X-Empire-Channel": "mcp",
@@ -684,7 +723,7 @@ def build_server(
                 if confirm is None
                 else Annotated[
                     ElicitationResult[Confirm],
-                    Resolve(confirmation_resolver(payload, confirm)),
+                    Resolve(confirmation_resolver(payload, confirm, token)),
                 ],
             )
         )
