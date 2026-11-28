@@ -53,7 +53,7 @@ elicitation. The API is called only when the person accepts and ticks `confirm`.
 - AC5: an unknown `EMPIRE_MCP_CONFIRM` value acts as `require`; an empty one acts as `ask`.
 - AC6: list, get, create and update never ask; an extension tool asks only with `confirm=True`.
 - AC7: invalid arguments are refused before anything is asked.
-- AC9: an accept whose `confirm` is `"true"`, `1` or `"yes"` sends nothing, on both protocol eras.
-- AC10: replaying an answered 2026-07-28 round sends nothing; another record is its own round.
 - AC8: end to end, an in-process MCP client with an elicitation callback sees the form, and its
   answer decides whether the API is called.
+- AC9: an accept whose `confirm` is `"true"`, `1` or `"yes"` sends nothing, on both protocol eras.
+- AC10: replaying an answered 2026-07-28 round sends nothing; another record is its own round.
